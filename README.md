@@ -8,11 +8,48 @@ cutoff and k-point convergence tests), and shows the results interactively: band
 location), band structure with DOS, projected DOS, SCF convergence, convergence-test recommendations and Löwdin charges.
 It can also analyse existing `.out` files.
 
-## Quick start
+## Installation (Windows 10/11)
 
-1. Clone this repository into a Windows folder.
-2. Double-click `qe_studio/Start QE Studio.bat`, or in WSL run `bash qe_studio/start.sh`.
-   The first start installs Miniforge and QE 7.x from conda-forge (`setup_wsl.sh`).
-3. Open http://localhost:8050 and click **Load silicon example** to try it.
+**1. Install WSL with Ubuntu** (once, if the PC doesn't have it). In PowerShell as Administrator:
 
-See [qe_studio/README.md](qe_studio/README.md) for details.
+```powershell
+wsl --install -d Ubuntu
+```
+
+Restart when asked, then open Ubuntu once and create a Linux username and password.
+
+**2. Get the project.** With Git for Windows installed:
+
+```powershell
+git clone https://github.com/mdasif-siddiqui/qe_data_analysis.git C:\Users\$env:USERNAME\qe_data_analysis
+```
+
+Without Git, use **Code → Download ZIP** on GitHub and unzip it.
+
+**3. Start it.** Double-click `qe_data_analysis\qe_studio\Start QE Studio.bat`.
+
+- **First start:** `setup_wsl.sh` installs Miniforge plus QE 7.x and the Python packages from conda-forge inside WSL.
+  This needs internet, about 2 GB of disk, and takes about 5–10 minutes.
+- **Every start:** the browser opens http://localhost:8050. If the page loads before the server is ready, refresh it.
+  Keep the console window open while you use the app; closing it stops the server.
+
+**4. Test it.** Click **Load silicon example**, then **Run calculation**. You should get a band gap of about 0.50 eV (indirect).
+
+### What happens automatically
+
+- **MPI processes:** set to the PC's physical core count.
+- **Pseudopotentials:** downloaded from the QE library on first use and cached in `qe_studio/pseudo_library/`.
+- **Runs:** saved in `qe_studio/runs/`. Neither runs nor pseudopotentials are in the repository; to move old results
+  to another PC, copy the `qe_studio\runs\` folder.
+
+### Other systems
+
+- **Native Linux:** clone the repo and run `bash qe_studio/start.sh`. Everything works except the "Open folder"
+  button, which only opens Windows Explorer.
+- **macOS:** not supported as-is. `setup_wsl.sh` installs the Linux build of Miniforge.
+
+### Keeping several PCs in sync
+
+After changing code on one PC, commit and push there, then run `git pull` in `qe_data_analysis` on the other.
+
+See [qe_studio/README.md](qe_studio/README.md) for how the app works.
