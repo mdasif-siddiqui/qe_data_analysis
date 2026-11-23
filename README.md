@@ -68,9 +68,11 @@ The **Analyse outputs** tab reads existing pw.x, dos.x and projwfc.x outputs of 
 
 ## Limitations
 
-- **Testing so far:** only silicon has been run end to end. Input reading was also checked for a hexagonal 2D slab
-  and for GaAs with `ibrav = 0`. Metals, magnetic systems and other materials should work but are not yet tested;
-  check the first results critically.
+- **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
+  examples. Input reading was also checked for a hexagonal 2D slab and for GaAs with `ibrav = 0`. Magnetic systems
+  and other materials should work but are not yet tested; check the first results critically.
+- **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
+  that E_F moves by +130 meV on the denser NSCF grid and that the convergence tests did not converge.
 - **2D materials / slabs:** the automatic k-path includes points along the vacuum direction. Enter the in-plane
   path yourself, e.g. `GMKG` for a hexagonal layer.
 - **relax / vc-relax inputs:** they run, but the band structure and DOS inputs use the structure from your input file,

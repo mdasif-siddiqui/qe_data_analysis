@@ -271,14 +271,16 @@ for (const [dropId, handler] of [["#drop", readFiles], ["#drop2", (f) => analyze
   d.addEventListener("drop", (e) => { e.preventDefault(); d.classList.remove("over"); handler(e.dataTransfer.files); });
 }
 editor.addEventListener("input", () => { clearTimeout(inspectTimer); inspectTimer = setTimeout(runInspect, 600); });
-$("#load-example").addEventListener("click", async () => {
-  const ex = await api("/api/example");
+async function loadExample(name, kpath) {
+  const ex = await api(`/api/example?name=${name}`);
   INPUT = { name: ex.name, pseudos: [] };
   editor.value = ex.text;
   $("#file-names").textContent = ex.name;
-  $("#o-kpath").value = "LGXUG";
+  $("#o-kpath").value = kpath;
   runInspect();
-});
+}
+$("#load-example").addEventListener("click", () => loadExample("si", "LGXUG"));
+$("#load-example-al").addEventListener("click", () => loadExample("al", ""));
 
 function formData() {
   const fd = new FormData();
@@ -417,7 +419,9 @@ function renderResults(st) {
     tile("Total energy", `${fmt(S.energy_ry, 6)} <small>Ry</small>`, `${fmt(S.energy_ev, 4)} eV · ${fmt(S.energy_ev_atom, 4)} eV/atom`),
     S.homo_ev !== null && S.homo_ev !== undefined
       ? tile("HOMO / LUMO (SCF grid)", `${fmt(S.homo_ev, 3)} / ${fmt(S.lumo_ev, 3)} <small>eV</small>`, S.lumo_ev ? `HOMO–LUMO gap on SCF k-grid ${(S.lumo_ev - S.homo_ev).toFixed(3)} eV` : "")
-      : tile("Fermi energy", `${fmt(S.fermi_ev, 3)} <small>eV</small>`, S.occupations),
+      : S.fermi_nscf_ev !== null && S.fermi_nscf_ev !== undefined
+        ? tile("Fermi energy", `${fmt(S.fermi_nscf_ev, 3)} <small>eV</small>`, `dense NSCF grid (used in plots) · SCF grid ${fmt(S.fermi_ev, 3)} eV · ${esc(S.occupations)}`)
+        : tile("Fermi energy", `${fmt(S.fermi_ev, 3)} <small>eV</small>`, esc(S.occupations)),
     tile("SCF", `${S.scf_iterations ?? "–"} <small>iterations</small>`, `${fmt(S.wall_s, 1)} s wall · ${S.mpi_procs || 1} MPI · QE ${esc(S.qe_version)}`),
     tile("Pressure", `${fmt(S.pressure_kbar, 2)} <small>kbar</small>`, `total force ${fmt(S.total_force, 5)} Ry/bohr`),
     ...(S.total_mag !== null && S.total_mag !== undefined ? [tile("Magnetisation", `${fmt(S.total_mag, 2)} <small>μB/cell</small>`, `absolute ${fmt(S.abs_mag, 2)} μB/cell`)] : []),

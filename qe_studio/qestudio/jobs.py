@@ -773,6 +773,19 @@ def analyse_job(job: Job) -> dict:
         checks.append({"level": "info", "msg": f"Pressure {summary['pressure_kbar']:.1f} kbar: the lattice constant is not at equilibrium for this functional/cutoff."})
     if res.get("projwfc", {}).get("spilling") and res["projwfc"]["spilling"] > 0.05:
         checks.append({"level": "info", "msg": f"PDOS spilling parameter {res['projwfc']['spilling']:.3f}: projections are approximate."})
+    # metals: a Fermi level that moves on the denser NSCF grid means the SCF k-grid is not converged
+    ef_scf, ef_nscf = summary.get("fermi_ev"), summary.get("fermi_nscf_ev")
+    if summary.get("is_metal") and ef_scf is not None and ef_nscf is not None and abs(ef_nscf - ef_scf) > 0.05:
+        checks.append({"level": "warn", "msg": (
+            f"Fermi energy changes from {ef_scf:.3f} eV (SCF grid) to {ef_nscf:.3f} eV on the denser NSCF grid "
+            f"({(ef_nscf - ef_scf) * 1000:+.0f} meV): the SCF k-point grid is not converged for this metal. "
+            "Plots use the NSCF value. Use a denser k-grid and/or a larger degauss, and run the k-point convergence test.")})
+    for kind, name in (("ecut", "cutoff"), ("k", "k-point")):
+        conv = res.get(f"conv_{kind}")
+        if conv and len([r for r in conv.get("rows", []) if r.get("energy_ry") is not None]) >= 2 and conv.get("recommended") is None:
+            checks.append({"level": "warn", "msg": (
+                f"The {name} convergence test did not converge to {conv.get('threshold_mev_atom', 1)} meV/atom within the "
+                "tested values. Test larger values before trusting total energies.")})
     res["checks"] = checks
     res["summary"] = _jsonable(summary)
     tmp = d / "results.json.tmp"

@@ -107,9 +107,13 @@ def status():
     })
 
 
+EXAMPLES = {"si": "si.scf.in", "al": "al.scf.in"}
+
+
 @app.get("/api/example")
 def example():
-    return jsonify({"name": "si.scf.in", "text": (ROOT / "examples" / "si.scf.in").read_text()})
+    name = EXAMPLES.get(request.args.get("name", "si"), "si.scf.in")
+    return jsonify({"name": name, "text": (ROOT / "examples" / name).read_text()})
 
 
 # ----------------------------------------------------------------------------- inspect / submit
