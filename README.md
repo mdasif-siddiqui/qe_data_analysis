@@ -35,6 +35,20 @@ Without Git, use **Code → Download ZIP** on GitHub and unzip it.
 
 **4. Test it.** Click **Load silicon example**, then **Run calculation**. You should get a band gap of about 0.50 eV (indirect).
 
+## Daily use
+
+After the first start, nothing is installed again:
+
+1. **Double-click `qe_studio\Start QE Studio.bat`.** The server starts in a few seconds and the browser opens
+   http://localhost:8050 by itself. If the page says it can't connect, wait 2–3 seconds and refresh.
+2. **Use your own input.** Drop your `scf.in` (and any `.UPF` files) into the page, choose what to calculate and click
+   **Run calculation**. The built-in examples are only for checking the installation.
+3. **Look at old results anytime.** The **Runs** tab lists every calculation, saved in `qe_studio\runs\`.
+4. **When you're done, close the console window.** That stops the app. Don't close it while a calculation is
+   running, or the calculation stops too.
+
+In short: **double-click → work in the browser → close the window.**
+
 ### What happens automatically
 
 - **MPI processes:** set to the PC's physical core count.
