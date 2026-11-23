@@ -52,4 +52,32 @@ Without Git, use **Code → Download ZIP** on GitHub and unzip it.
 
 After changing code on one PC, commit and push there, then run `git pull` in `qe_data_analysis` on the other.
 
+## Supported materials
+
+QE Studio works with any pw.x `scf.in`, not just the silicon example:
+
+- **Any crystal structure:** every `ibrav`, `celldm` or `A, B, C`, or your own `CELL_PARAMETERS`.
+- **Any elements:** pseudopotentials named in `ATOMIC_SPECIES` are downloaded from the official QE library when they exist
+  there; otherwise upload your own `.UPF` files together with the input (SSSP, PSlibrary, …).
+- **Semiconductors and insulators:** band gap, direct or indirect, with the VBM/CBM positions.
+- **Metals** (`occupations = 'smearing'`): detected from bands crossing the Fermi level; plots use E_F = 0.
+- **Magnetic materials** (`nspin = 2`): spin-up and spin-down bands and DOS, plus the magnetisation.
+- **High-symmetry k-path:** chosen automatically for the lattice type, or entered by hand (e.g. `GXMGR`).
+
+The **Analyse outputs** tab reads existing pw.x, dos.x and projwfc.x outputs of any material.
+
+## Limitations
+
+- **Testing so far:** only silicon has been run end to end. Input reading was also checked for a hexagonal 2D slab
+  and for GaAs with `ibrav = 0`. Metals, magnetic systems and other materials should work but are not yet tested;
+  check the first results critically.
+- **2D materials / slabs:** the automatic k-path includes points along the vacuum direction. Enter the in-plane
+  path yourself, e.g. `GMKG` for a hexagonal layer.
+- **relax / vc-relax inputs:** they run, but the band structure and DOS inputs use the structure from your input file,
+  not the relaxed one. For bands of the relaxed structure, put the final coordinates into a new scf input.
+- **Spin-orbit / non-collinear** (`noncolin`, `lspinorb`): basic support only, the least tested part.
+- **Large systems:** on a 4-core laptop, more than about 20–30 atoms or high cutoffs take from many minutes to hours.
+- **Other QE programs** (`ph.x`, `cp.x`, `neb.x`, …) are not supported.
+- **`ATOMIC_POSITIONS crystal_sg`** is not supported by the structure viewer.
+
 See [qe_studio/README.md](qe_studio/README.md) for how the app works.
