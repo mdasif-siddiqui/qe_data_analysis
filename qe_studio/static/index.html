@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QE Studio</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%232a78d6'/><circle cx='16' cy='16' r='5' fill='white'/></svg>">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/vendor/plotly.min.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo"></span>QE Studio<span class="sub">Quantum ESPRESSO analysis</span></div>
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-view="new" role="tab">New calculation</button>
+    <button class="tab" data-view="runs" role="tab">Runs</button>
+    <button class="tab" data-view="analyze" role="tab">Analyse outputs</button>
+  </nav>
+  <div id="sys" class="sys">checking QE…</div>
+</header>
+
+<main>
+<!-- ============================================================ NEW -->
+<section id="view-new" class="view active">
+  <div class="grid2">
+    <div class="card">
+      <div class="card-h"><h2>1 · Input file</h2>
+        <button class="link" id="load-example">Load silicon example</button></div>
+      <label id="drop" class="drop">
+        <input type="file" id="file-in" multiple accept=".in,.pwi,.txt,.UPF,.upf">
+        <strong>Drop your scf.in here</strong> or click to choose.<br>
+        <span class="muted">You can add .UPF pseudopotentials too. Missing ones are downloaded from the QE library.</span>
+      </label>
+      <div class="row small" id="file-names"></div>
+      <textarea id="editor" spellcheck="false" placeholder="…or paste a pw.x input here"></textarea>
+      <div class="muted small">You can edit the input here. The original file is saved unchanged in the run folder.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><h2>2 · What QE Studio found</h2></div>
+      <div id="inspect-empty" class="empty">Load an input to see the structure, settings and checks.</div>
+      <div id="inspect" hidden>
+        <div id="msgs"></div>
+        <div class="kv" id="kv"></div>
+        <div id="struct3d" class="plot plot-s"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="opts-card">
+    <div class="card-h"><h2>3 · Calculations to run</h2></div>
+    <div class="opts">
+      <div class="opt">
+        <label class="chk"><input type="checkbox" id="o-scf" checked disabled> SCF</label>
+        <div class="muted small">Always runs first. Total energy, Fermi level / HOMO-LUMO, forces, stress.</div>
+      </div>
+      <div class="opt">
+        <label class="chk"><input type="checkbox" id="o-bands" checked> Band structure</label>
+        <div class="field"><span>k-path</span><input id="o-kpath" placeholder="auto"><span class="muted small" id="kpath-hint"></span></div>
+        <div class="field"><span>points / Å⁻¹</span><input id="o-kdens" type="number" value="40" min="5" max="200"></div>
+      </div>
+      <div class="opt">
+        <label class="chk"><input type="checkbox" id="o-dos" checked> DOS + projected DOS</label>
+        <div class="field"><span>NSCF k-grid</span><input id="o-nscf" placeholder="auto (2× SCF grid)"></div>
+      </div>
+      <div class="opt">
+        <label class="chk"><input type="checkbox" id="o-conv"> Convergence tests</label>
+        <div class="field"><span>ecutwfc (Ry)</span><input id="o-ecut" placeholder="auto: 0.5×…2× of yours"></div>
+        <div class="field"><span>k (largest)</span><input id="o-klist" placeholder="auto"></div>
+        <div class="field"><span>threshold</span><input id="o-thr" type="number" value="1" step="0.1" min="0.01"><span class="muted small">meV/atom</span></div>
+      </div>
+      <div class="opt">
+        <div class="field"><span>MPI processes</span><input id="o-np" type="number" min="1" value="4"><span class="muted small" id="np-hint"></span></div>
+        <label class="chk"><input type="checkbox" id="o-dl" checked> Download missing pseudopotentials</label>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="run" disabled>Run calculation</button>
+      <span id="run-msg" class="muted"></span>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ RUNS -->
+<section id="view-runs" class="view">
+  <div class="card">
+    <div class="card-h"><h2>Runs</h2><span class="muted small" id="runs-dir"></span></div>
+    <table class="tbl" id="runs-tbl"><thead><tr>
+      <th>Run</th><th>Input</th><th>Status</th><th class="num">Energy (Ry)</th><th class="num">Gap (eV)</th><th>Started</th></tr></thead>
+      <tbody></tbody></table>
+    <div id="runs-empty" class="empty" hidden>No runs yet.</div>
+  </div>
+</section>
+
+<section id="view-job" class="view">
+  <div class="card">
+    <div class="card-h">
+      <div><button class="link" id="back-runs">← Runs</button>
+        <h2 id="job-title">Run</h2> <span id="job-status" class="badge"></span></div>
+      <div class="btns">
+        <button id="job-cancel">Cancel</button>
+        <button id="job-open">Open folder</button>
+        <button id="job-zip">Download all</button>
+        <button id="job-reanalyse">Re-analyse</button>
+        <button id="job-delete" class="danger">Delete</button>
+      </div>
+    </div>
+    <ol class="steps" id="job-steps"></ol>
+    <details id="job-log-wrap"><summary>Pipeline log</summary><pre id="job-log"></pre></details>
+    <pre id="job-live" class="live" hidden></pre>
+  </div>
+  <div id="results" hidden>
+    <div class="tiles" id="tiles"></div>
+    <div id="checks"></div>
+    <div class="card">
+      <div class="card-h"><h2>Band structure &amp; density of states</h2>
+        <div class="ctrl">Energy window <input id="e-min" type="number" value="-6" step="1"> to
+          <input id="e-max" type="number" value="6" step="1"> eV
+          <label class="chk"><input type="checkbox" id="show-pdos" checked> PDOS</label></div></div>
+      <div id="p-bands" class="plot plot-l"></div>
+      <div class="muted small" id="bands-note"></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><div class="card-h"><h2>Projected DOS</h2></div><div id="p-pdos" class="plot"></div></div>
+      <div class="card"><div class="card-h"><h2>SCF convergence</h2></div><div id="p-scf" class="plot"></div></div>
+    </div>
+    <div class="grid2" id="conv-row" hidden>
+      <div class="card"><div class="card-h"><h2>Cutoff convergence</h2></div><div id="p-conv-ecut" class="plot"></div><div id="t-conv-ecut"></div></div>
+      <div class="card"><div class="card-h"><h2>k-point convergence</h2></div><div id="p-conv-k" class="plot"></div><div id="t-conv-k"></div></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><div class="card-h"><h2>Structure</h2></div><div id="p-struct" class="plot"></div></div>
+      <div class="card"><div class="card-h"><h2>Details</h2></div><div id="details"></div></div>
+    </div>
+    <div class="card"><div class="card-h"><h2>Files</h2><span class="muted small" id="win-dir"></span></div><div id="files" class="files"></div></div>
+  </div>
+</section>
+
+<!-- ============================================================ ANALYZE -->
+<section id="view-analyze" class="view">
+  <div class="card">
+    <div class="card-h"><h2>Analyse existing QE outputs</h2></div>
+    <div class="grid2 tight">
+      <label class="drop" id="drop2">
+        <input type="file" id="files-an" multiple>
+        <strong>Drop .out files here</strong> (pw.x, dos.x, projwfc.x, bands.x…).<br>
+        <span class="muted">Add the matching bands .in to get k-point labels.</span>
+      </label>
+      <div>
+        <div class="field wide"><span>…or a folder</span><input id="an-folder" placeholder="C:\Users\you\Documents\qe_results"></div>
+        <button id="an-go">Analyse folder</button>
+      </div>
+    </div>
+  </div>
+  <div id="an-results" hidden>
+    <div class="card">
+      <div class="card-h"><h2>Summary</h2><button id="an-csv">Export CSV</button></div>
+      <div class="scroll"><table class="tbl" id="an-tbl"></table></div>
+      <div id="an-checks"></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><div class="card-h"><h2>SCF convergence</h2></div><div id="a-scf" class="plot"></div></div>
+      <div class="card"><div class="card-h"><h2>Energy comparison</h2></div><div id="a-energy" class="plot"></div></div>
+    </div>
+    <div class="grid2">
+      <div class="card" id="a-relax-card" hidden><div class="card-h"><h2>Relaxation</h2></div><div id="a-relax" class="plot"></div></div>
+      <div class="card" id="a-conv-card" hidden><div class="card-h"><h2>Cutoff / k-point convergence</h2></div><div id="a-conv" class="plot"></div></div>
+    </div>
+    <div id="a-bands"></div>
+  </div>
+</section>
+</main>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

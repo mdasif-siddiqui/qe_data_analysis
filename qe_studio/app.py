@@ -1,0 +1,336 @@
+"""QE Studio web server. Run inside WSL:  bash start.sh  (then open http://localhost:8050)."""
+from __future__ import annotations
+
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import zipfile
+from pathlib import Path
+
+from flask import Flask, abort, jsonify, request, send_file, send_from_directory
+
+from qestudio import jobs, pseudos, qein, qeout
+
+ROOT = Path(__file__).resolve().parent
+app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
+_STATUS_CACHE: dict = {}
+
+
+def win_path(p: Path) -> str:
+    try:
+        return subprocess.run(["wslpath", "-w", str(p)], capture_output=True, text=True, timeout=5).stdout.strip() or str(p)
+    except OSError:
+        return str(p)
+
+
+def linux_path(p: str) -> str:
+    p = p.strip().strip('"')
+    if re.match(r"^[A-Za-z]:[\\/]", p) or p.startswith("\\\\"):
+        try:
+            return subprocess.run(["wslpath", "-u", p], capture_output=True, text=True, timeout=5).stdout.strip()
+        except OSError:
+            pass
+    return os.path.expanduser(p)
+
+
+def job_or_404(jid: str) -> jobs.Job:
+    if not re.fullmatch(r"[\w.-]+", jid) or not (jobs.RUNS / jid).is_dir():
+        abort(404)
+    return jobs.manager().get(jid)
+
+
+# ----------------------------------------------------------------------------- pages
+@app.get("/")
+def index():
+    return send_from_directory(ROOT / "static", "index.html")
+
+
+@app.get("/vendor/plotly.min.js")
+def plotly_js():
+    import plotly
+    return send_from_directory(Path(plotly.__file__).parent / "package_data", "plotly.min.js")
+
+
+# ----------------------------------------------------------------------------- status
+@app.get("/api/status")
+def status():
+    if "qe_version" not in _STATUS_CACHE:
+        _STATUS_CACHE["qe_version"] = jobs.qe_version()
+    m = jobs.manager()
+    return jsonify({
+        "qe_version": _STATUS_CACHE["qe_version"],
+        "pw_path": jobs.exe("pw.x"),
+        "logical_cpus": os.cpu_count(),
+        "physical_cores": jobs.physical_cores(),
+        "launcher": m.launcher,
+        "running": m.current.id if m.current else None,
+        "queued": m.q.qsize(),
+        "runs_dir": win_path(jobs.RUNS),
+        "pseudo_library": pseudos.library_listing(),
+    })
+
+
+@app.get("/api/example")
+def example():
+    return jsonify({"name": "si.scf.in", "text": (ROOT / "examples" / "si.scf.in").read_text()})
+
+
+# ----------------------------------------------------------------------------- inspect / submit
+def _read_upload():
+    text, name = None, "scf.in"
+    f = request.files.get("scf")
+    if f:
+        text = f.read().decode("utf-8", "replace")
+        name = f.filename or name
+    elif request.form.get("text"):
+        text = request.form["text"]
+        name = request.form.get("name") or name
+    if text is None:
+        abort(400, "No input file given")
+    pp = {}
+    for pf in request.files.getlist("pseudos"):
+        if pf and pf.filename:
+            pp[os.path.basename(pf.filename)] = pf.read()
+    return text, name, pp
+
+
+@app.post("/api/inspect")
+def inspect():
+    text, name, pp = _read_upload()
+    res = qein.inspect(text)
+    res["name"] = name
+    # pseudopotential availability
+    avail = []
+    for s in res.get("species", []):
+        n = s["pseudo"]
+        if n in pp:
+            src = "uploaded"
+        else:
+            found = pseudos.find(n)
+            if found and found.parent == pseudos.LIBRARY:
+                src = "in QE Studio's pseudo library"
+            elif found:
+                src = f"found in {found.parent}"
+            else:
+                src = "will be downloaded from the QE library"
+        avail.append({"name": n, "source": src, "label": s["label"]})
+    res["pseudo_status"] = avail
+    res["physical_cores"] = jobs.physical_cores()
+    return jsonify(jobs._jsonable(res))
+
+
+@app.post("/api/jobs")
+def submit():
+    text, name, pp = _read_upload()
+    check = qein.inspect(text)
+    if check.get("errors"):
+        return jsonify({"error": "Input has errors: " + " ".join(check["errors"])}), 400
+    try:
+        opts = json.loads(request.form.get("options") or "{}")
+    except json.JSONDecodeError:
+        opts = {}
+    job = jobs.create_job(text, name, pp, opts)
+    return jsonify({"id": job.id})
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    return jsonify(jobs._jsonable(jobs.list_jobs()))
+
+
+@app.get("/api/jobs/<jid>")
+def job_detail(jid):
+    job = job_or_404(jid)
+    st = job.load()
+    log = job.dir / "pipeline.log"
+    st["log"] = log.read_text()[-8000:] if log.exists() else ""
+    # live tail of the currently running program
+    cur = st.get("current_step")
+    names = {"scf": "scf.out", "bands": "bands.out", "nscf": "nscf.out", "dos": "dos.out", "pdos": "projwfc.out",
+             "bandsx": "bands_pp.out"}
+    if st.get("status") == "running" and cur in names and (job.dir / names[cur]).exists():
+        st["live"] = "\n".join((job.dir / names[cur]).read_text(errors="replace").splitlines()[-25:])
+    res = job.dir / "results.json"
+    if res.exists() and st.get("status") not in ("running", "queued"):
+        try:
+            st["results"] = json.loads(res.read_text())
+        except json.JSONDecodeError:
+            pass
+    st["files"] = sorted(str(p.relative_to(job.dir)) for p in job.dir.rglob("*") if p.is_file())
+    st["win_dir"] = win_path(job.dir)
+    return jsonify(jobs._jsonable(st))
+
+
+@app.post("/api/jobs/<jid>/cancel")
+def cancel(jid):
+    job_or_404(jid)
+    jobs.manager().cancel(jid)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/jobs/<jid>/reanalyse")
+def reanalyse(jid):
+    job = job_or_404(jid)
+    jobs.analyse_job(job)
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/jobs/<jid>")
+def delete(jid):
+    job = job_or_404(jid)
+    if job.load().get("status") in ("running", "queued"):
+        return jsonify({"error": "Cancel the job before deleting it."}), 400
+    shutil.rmtree(job.dir)
+    shutil.rmtree(job.scratch, ignore_errors=True)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/jobs/<jid>/file/<path:rel>")
+def job_file(jid, rel):
+    job = job_or_404(jid)
+    p = (job.dir / rel).resolve()
+    if job.dir.resolve() not in p.parents or not p.is_file():
+        abort(404)
+    return send_file(p, as_attachment=request.args.get("dl") == "1", download_name=p.name,
+                     mimetype="text/plain" if p.suffix in (".in", ".out", ".err", ".log", ".dat", ".gnu", ".dos") or "pdos" in p.name else None)
+
+
+@app.get("/api/jobs/<jid>/zip")
+def job_zip(jid):
+    job = job_or_404(jid)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in job.dir.rglob("*"):
+            if p.is_file():
+                z.write(p, f"{jid}/{p.relative_to(job.dir)}")
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name=f"{jid}.zip", mimetype="application/zip")
+
+
+@app.post("/api/jobs/<jid>/open")
+def open_folder(jid):
+    job = job_or_404(jid)
+    try:
+        subprocess.Popen(["explorer.exe", win_path(job.dir)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True})
+
+
+# ----------------------------------------------------------------------------- analyse existing outputs
+def _analyse_paths(paths: list[Path]) -> dict:
+    outs = [p for p in paths if p.suffix.lower() in (".out", ".log", ".txt") or ".out" in p.name]
+    ins = {p.name: p for p in paths if p.suffix.lower() == ".in"}
+    items = []
+    for p in sorted(outs):
+        try:
+            d = qeout.parse_any(p)
+        except Exception as e:
+            items.append({"file": p.name, "program": "?", "errors": [f"could not parse: {e}"]})
+            continue
+        if d.get("program") == "unknown":
+            continue
+        items.append(d)
+    # reference levels (VBM / E_F) from SCF files for band plots
+    scfs = [d for d in items if d.get("program") == "PWSCF" and d.get("calculation") in ("scf", "relax", "vc-relax")]
+    for d in items:
+        if d.get("program") != "PWSCF":
+            continue
+        bd = qeout.bands_from_pw(d)
+        d.pop("bands", None)
+        if not bd or len(bd["kpts"]) < 2:
+            continue
+        ref_src = next((s for s in scfs if s.get("nelec") == d.get("nelec") and s.get("nat") == d.get("nat")), None)
+        fermi = d.get("fermi_ev") or (ref_src or {}).get("fermi_ev")
+        fixed = fermi is None or d.get("homo_ev") is not None or (ref_src or {}).get("homo_ev") is not None
+        edges = qeout.band_edges(bd["eig"], bd["kpts"], d.get("nelec"), fermi, fixed)
+        d["gap"] = jobs._jsonable(edges)
+        if d.get("calculation") == "bands":
+            labels = _labels_from_inputs(ins, d, len(bd["kpts"]))
+            if labels:
+                idx, names, jumps = labels
+                x = qeout.kpath_distance(bd["kpts"], jumps)
+                ticks = []
+                for i, n in zip(idx, names):
+                    if i < len(x):
+                        if ticks and abs(ticks[-1]["x"] - x[i]) < 1e-9:
+                            ticks[-1]["label"] += "|" + n
+                        else:
+                            ticks.append({"x": float(x[i]), "label": n})
+            else:
+                x = qeout.kpath_distance(bd["kpts"])
+                ticks = [{"x": float(x[i]), "label": ""} for i in qeout.detect_kinks(bd["kpts"])]
+            if edges.get("metal") is False:
+                for w in ("vbm", "cbm"):
+                    edges[f"{w}_where"] = jobs._where(x[edges[f"{w}_index"]], ticks)
+            ref = edges.get("vbm_ev") if edges.get("metal") is False else fermi
+            d["band_plot"] = {"x": x.tolist(), "eig": [e.T.tolist() for e in bd["eig"]], "ticks": ticks,
+                              "reference_ev": ref, "reference_label": "VBM" if edges.get("metal") is False else "E_F",
+                              "edges": jobs._jsonable(edges), "reference_from": (ref_src or {}).get("file")}
+    return {"items": jobs._jsonable(items)}
+
+
+def _labels_from_inputs(ins: dict, d: dict, nks: int):
+    """Find a bands .in with a crystal_b path giving exactly nks points; read labels from comments."""
+    cands = sorted(ins.values(), key=lambda p: (Path(d["file"]).stem not in p.stem, p.name))
+    for p in cands:
+        raw = p.read_text(errors="replace").replace("\r", "")
+        m = re.search(r"(?im)^\s*K_POINTS\s*[{(]?\s*(crystal_b|tpiba_b)\s*[})]?\s*\n\s*(\d+)\s*\n", raw)
+        if not m:
+            continue
+        n = int(m.group(2))
+        lines = raw[m.end():].split("\n")[:n]
+        w, names = [], []
+        for ln in lines:
+            parts = ln.split("!")
+            nums = parts[0].split()
+            if len(nums) < 4:
+                break
+            w.append(int(float(nums[3])))
+            lbl = parts[1].strip() if len(parts) > 1 else (nums[4] if len(nums) > 4 else "")
+            names.append(qein.pretty_label(lbl.strip()) if lbl else "")
+        if len(w) != n or sum(w[:-1]) + 1 != nks:
+            continue
+        idx = [sum(w[:i]) for i in range(n)]
+        jumps = [idx[i] for i in range(n - 1) if w[i] == 1]
+        return idx, names, jumps
+    return None
+
+
+@app.post("/api/analyze")
+def analyze():
+    folder = request.form.get("folder", "").strip()
+    if folder:
+        p = Path(linux_path(folder))
+        if not p.is_dir():
+            return jsonify({"error": f"Folder not found: {folder} ({p})"}), 400
+        paths = [q for q in p.iterdir() if q.is_file()]
+        res = _analyse_paths(paths)
+        res["folder"] = str(p)
+        return jsonify(res)
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "No files uploaded"}), 400
+    with tempfile.TemporaryDirectory() as td:
+        paths = []
+        for f in files:
+            name = os.path.basename(f.filename or "file.out")
+            q = Path(td) / name
+            f.save(q)
+            paths.append(q)
+        res = _analyse_paths(paths)
+    for it in res["items"]:
+        it.pop("path", None)
+    return jsonify(res)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("QE_STUDIO_PORT", "8050"))
+    jobs.manager()
+    print(f"QE Studio running at http://localhost:{port}")
+    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

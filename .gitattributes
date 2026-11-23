@@ -1,0 +1,5 @@
+# Shell scripts run inside WSL and must keep Unix line endings
+*.sh text eol=lf
+*.py text eol=lf
+*.in text eol=lf
+*.bat text eol=crlf
