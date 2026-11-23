@@ -1,0 +1,7 @@
+.git
+.github
+.claude
+**/__pycache__
+qe_studio/runs
+qe_studio/pseudo_library
+setup.log

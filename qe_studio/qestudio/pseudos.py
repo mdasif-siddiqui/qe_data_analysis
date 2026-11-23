@@ -11,6 +11,17 @@ LIBRARY = Path(__file__).resolve().parent.parent / "pseudo_library"
 QE_URL = "https://pseudopotentials.quantum-espresso.org/upf_files/{name}"
 
 
+NAME_RE = re.compile(r"^[A-Za-z0-9][\w.+\-]{0,120}$")
+
+
+def safe_name(name: str) -> str:
+    """Pseudopotential file name without any directory part; rejects odd names."""
+    base = str(name)
+    if not NAME_RE.match(base):  # no directory parts: QE would follow them relative to pseudo_dir
+        raise ValueError(f"Invalid pseudopotential file name: {name!r}")
+    return base
+
+
 def is_valid_upf(path: Path) -> tuple[bool, str]:
     try:
         head = path.read_bytes()[:4000].decode("utf-8", "replace")
@@ -46,6 +57,10 @@ def search_dirs(extra: list[Path] | None = None) -> list[Path]:
 
 
 def find(name: str, extra: list[Path] | None = None) -> Path | None:
+    try:
+        name = safe_name(name)
+    except ValueError:
+        return None
     for d in search_dirs(extra):
         p = d / name
         if p.is_file() and is_valid_upf(p)[0]:
@@ -54,6 +69,7 @@ def find(name: str, extra: list[Path] | None = None) -> Path | None:
 
 
 def download(name: str) -> Path:
+    name = safe_name(name)
     LIBRARY.mkdir(parents=True, exist_ok=True)
     dest = LIBRARY / name
     tmp = dest.with_suffix(dest.suffix + ".part")
@@ -74,6 +90,7 @@ def ensure(names: list[str], dest_dir: Path, extra: list[Path] | None = None,
     dest_dir.mkdir(parents=True, exist_ok=True)
     info = {}
     for name in names:
+        name = safe_name(name)
         target = dest_dir / name
         if target.is_file() and is_valid_upf(target)[0]:
             src = "uploaded"

@@ -22,6 +22,7 @@
 <main>
 <!-- ============================================================ NEW -->
 <section id="view-new" class="view active">
+  <div id="public-note" class="msg info" hidden></div>
   <div class="grid2">
     <div class="card">
       <div class="card-h"><h2>1 · Input file</h2>
@@ -99,10 +100,10 @@
         <h2 id="job-title">Run</h2> <span id="job-status" class="badge"></span></div>
       <div class="btns">
         <button id="job-cancel">Cancel</button>
-        <button id="job-open">Open folder</button>
+        <button id="job-open" class="local-only">Open folder</button>
         <button id="job-zip">Download all</button>
         <button id="job-reanalyse">Re-analyse</button>
-        <button id="job-delete" class="danger">Delete</button>
+        <button id="job-delete" class="danger local-only">Delete</button>
       </div>
     </div>
     <ol class="steps" id="job-steps"></ol>
@@ -146,7 +147,7 @@
         <strong>Drop .out files here</strong> (pw.x, dos.x, projwfc.x, bands.x…).<br>
         <span class="muted">Add the matching bands .in to get k-point labels.</span>
       </label>
-      <div>
+      <div class="local-only">
         <div class="field wide"><span>…or a folder</span><input id="an-folder" placeholder="C:\Users\you\Documents\qe_results"></div>
         <button id="an-go">Analyse folder</button>
       </div>

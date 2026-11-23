@@ -226,10 +226,26 @@ async function loadStatus() {
       (SYS.running ? ` · running 1${SYS.queued ? ` (+${SYS.queued} queued)` : ""}` : "");
     if (!$("#o-np").dataset.touched) $("#o-np").value = SYS.physical_cores;
     $("#np-hint").textContent = `${SYS.physical_cores} physical cores`;
-    $("#runs-dir").textContent = SYS.runs_dir;
+    $("#runs-dir").textContent = SYS.public ? "Runs started from this browser" : SYS.runs_dir;
+    applyPublicMode();
   } catch (e) { $("#sys").textContent = "server not reachable"; }
 }
 $("#o-np").addEventListener("input", (e) => (e.target.dataset.touched = 1));
+
+function applyPublicMode() {
+  if (!SYS.public) return;
+  document.body.classList.add("public");
+  const L = SYS.limits || {};
+  const b = $("#public-note");
+  if (b) {
+    b.hidden = false;
+    b.innerHTML = `Shared server: up to ${L.atoms} atoms, ecutwfc ≤ ${L.ecutwfc} Ry, ≤ ${L.kpoints} k-points per grid, ` +
+      `${Math.round((L.step_seconds || 0) / 60)} min per step. Runs are deleted after ${L.keep_days} days. Don't upload confidential structures.`;
+  }
+}
+const MY_RUNS_KEY = "qe-studio-my-runs";
+const myRuns = () => JSON.parse(localStorage.getItem(MY_RUNS_KEY) || "[]");
+function rememberRun(id) { localStorage.setItem(MY_RUNS_KEY, JSON.stringify([...new Set([id, ...myRuns()])].slice(0, 100))); }
 
 /* ------------------------------------------------------------------ new calculation */
 let INPUT = { name: "scf.in", pseudos: [] };
@@ -324,6 +340,7 @@ $("#run").addEventListener("click", async () => {
   $("#run").disabled = true;
   try {
     const r = await api("/api/jobs", { method: "POST", body: fd });
+    rememberRun(r.id);
     location.hash = `job/${r.id}`;
   } catch (e) { toast(e.message, 6000); }
   finally { $("#run").disabled = false; }
@@ -332,7 +349,7 @@ $("#run").addEventListener("click", async () => {
 /* ------------------------------------------------------------------ runs */
 const STATUS_TXT = { done: "done", done_with_errors: "done with errors", failed: "failed", running: "running", queued: "queued", cancelled: "cancelled" };
 async function loadRuns() {
-  const list = await api("/api/jobs");
+  const list = await api("/api/jobs" + (SYS.public ? "?ids=" + encodeURIComponent(myRuns().join(",")) : ""));
   $("#runs-empty").hidden = list.length > 0;
   $("#runs-tbl tbody").innerHTML = list.map((j) => `<tr data-id="${esc(j.id)}">
     <td>${esc(j.id)}</td><td>${esc(j.input_name)}</td>

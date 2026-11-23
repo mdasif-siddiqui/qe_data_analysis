@@ -20,25 +20,54 @@ from pathlib import Path
 
 import numpy as np
 
-from . import pseudos, qein, qeout
+from . import config, pseudos, qein, qeout
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNS = ROOT / "runs"
 # QE's scratch (outdir: wavefunctions, charge density) lives on the Linux filesystem: reading and
 # writing it under /mnt/c is several times slower. Inputs/outputs stay in runs/<id>/.
 SCRATCH = Path.home() / ".cache" / "qe_studio"
-QE_BIN = Path.home() / "miniforge3" / "envs" / "qe" / "bin"
+QE_BIN = Path(config.QE_BIN) if config.QE_BIN else Path.home() / "miniforge3" / "envs" / "qe" / "bin"
+if not (QE_BIN / "pw.x").exists() and shutil.which("pw.x"):
+    QE_BIN = Path(shutil.which("pw.x")).parent
+
+
+class LimitError(ValueError):
+    """Input exceeds the configured limits (public mode)."""
+
+
+def _cpu_quota() -> int | None:
+    """CPUs allowed by the container (cgroup v2 cpu.max), if limited."""
+    try:
+        q, period = open("/sys/fs/cgroup/cpu.max").read().split()
+        if q != "max":
+            return max(1, int(int(q) / int(period)))
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def physical_cores() -> int:
+    n = None
     try:
         out = subprocess.run(["lscpu", "-p=CORE,SOCKET"], capture_output=True, text=True).stdout
         cores = {l for l in out.splitlines() if l and not l.startswith("#")}
         if cores:
-            return len(cores)
+            n = len(cores)
     except OSError:
         pass
-    return max(1, (os.cpu_count() or 2) // 2)
+    if n is None:
+        n = max(1, (os.cpu_count() or 2) // 2)
+    try:
+        n = min(n, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        pass
+    q = _cpu_quota()
+    if q:
+        n = min(n, q)
+    if config.MAX_NP:
+        n = min(n, config.MAX_NP)
+    return max(1, n)
 
 
 def exe(name: str) -> str:
@@ -190,7 +219,15 @@ class Manager:
             with open(out, "w") as fo, open(out.with_suffix(".err"), "w") as fe:
                 job.proc = subprocess.Popen(cmd, cwd=cwd, stdout=fo, stderr=fe, stdin=stdin, env=env_m,
                                             start_new_session=True)
-                rc = job.proc.wait()
+                try:
+                    rc = job.proc.wait(timeout=config.MAX_STEP_SECONDS or None)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(job.proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    job.proc.wait()
+                    raise RuntimeError(f"{program} exceeded the time limit of {config.MAX_STEP_SECONDS} s for one step.")
             if stdin is not subprocess.DEVNULL:
                 stdin.close()
             if job.cancelled:
@@ -222,16 +259,29 @@ def create_job(scf_text: str, scf_name: str, pseudo_files: dict[str, bytes], opt
     mgr = manager()  # start the manager before writing a 'queued' job (it resets stale ones on start)
     fixed, notes = qein.normalize_text(scf_text)
     parsed = qein.parse_input(fixed)
+    check_limits(fixed, parsed, options)
+    for sp in qein.species_list(parsed):
+        pseudos.safe_name(sp["pseudo"])  # raises ValueError for names with paths
+    if mgr.q.qsize() >= config.MAX_QUEUE:
+        raise LimitError(f"The queue is full ({config.MAX_QUEUE} jobs waiting). Try again later.")
+    cleanup_old_runs()
     prefix = str(qein.get(parsed, "control", "prefix", "pwscf"))
     safe = re.sub(r"[^\w.-]", "_", prefix)[:40]
-    jid = f"{datetime.now():%Y%m%d-%H%M%S}_{safe}"
+    base = f"{datetime.now():%Y%m%d-%H%M%S}_{safe}"
+    if config.PUBLIC:  # unguessable ids: others cannot open your run by guessing its time stamp
+        import secrets
+        base += "_" + secrets.token_hex(6)
+    jid, n = base, 1
+    while (RUNS / jid).exists():
+        n += 1
+        jid = f"{base}-{n}"
     job = Job(jid)
     job.dir.mkdir(parents=True)
     (job.dir / ("original_" + os.path.basename(scf_name or "scf.in"))).write_text(scf_text)
     pdir = job.dir / "pseudos"
     pdir.mkdir()
     for name, data in pseudo_files.items():
-        (pdir / os.path.basename(name)).write_bytes(data)
+        (pdir / pseudos.safe_name(name)).write_bytes(data)
     steps = [{"name": "prepare", "label": "Prepare inputs & pseudopotentials"},
              {"name": "scf", "label": "SCF (pw.x)"}]
     if options.get("bands", True):
@@ -253,6 +303,48 @@ def create_job(scf_text: str, scf_name: str, pseudo_files: dict[str, bytes], opt
     job.log(f"Job created from {scf_name}. " + " ".join(notes))
     mgr.submit(job)
     return job
+
+
+def check_limits(text: str, parsed: dict, options: dict):
+    """Raise LimitError if the job is bigger than this server allows (see config.py)."""
+    sysnl = parsed["namelists"].get("system", {})
+    nat = int(sysnl.get("nat", 0) or 0)
+    if nat > config.MAX_ATOMS:
+        raise LimitError(f"nat = {nat}: this server allows at most {config.MAX_ATOMS} atoms.")
+    ecut = sysnl.get("ecutwfc")
+    if isinstance(ecut, (int, float)) and ecut > config.MAX_ECUTWFC:
+        raise LimitError(f"ecutwfc = {ecut} Ry: this server allows at most {config.MAX_ECUTWFC} Ry.")
+    grids = []
+    k = qein.kpoints_info(parsed)
+    if k.get("grid"):
+        grids.append(k["grid"])
+    if options.get("nscf_grid"):
+        grids.append([int(x) for x in options["nscf_grid"]])
+    for g in grids:
+        if g and int(np.prod(g)) > config.MAX_KPOINTS:
+            raise LimitError(f"k-grid {'x'.join(map(str, g))} is larger than this server allows ({config.MAX_KPOINTS} points).")
+    if config.PUBLIC:
+        for key in ("ecut_list", "k_list"):
+            vals = [v for v in re.split(r"[,\s]+", str(options.get(key) or "")) if v]
+            if len(vals) > 8:
+                raise LimitError("At most 8 values per convergence test.")
+            if key == "ecut_list" and any(float(v) > config.MAX_ECUTWFC for v in vals):
+                raise LimitError(f"Convergence cutoffs must be at most {config.MAX_ECUTWFC} Ry.")
+            if key == "k_list" and any(int(float(v)) ** 3 > config.MAX_KPOINTS for v in vals):
+                raise LimitError("A convergence k-point value is too large for this server.")
+
+
+def cleanup_old_runs():
+    if not config.KEEP_DAYS or not RUNS.exists():
+        return
+    cutoff = time.time() - config.KEEP_DAYS * 86400
+    for d in RUNS.iterdir():
+        st = Job(d.name).load()
+        if st.get("status") in ("running", "queued"):
+            continue
+        if (st.get("created") or d.stat().st_mtime) < cutoff:
+            shutil.rmtree(d, ignore_errors=True)
+            shutil.rmtree(SCRATCH / d.name, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- pipeline
@@ -309,7 +401,9 @@ def _timed(job: Job, name: str, fn):
 def run_pipeline(mgr: Manager, job: Job):
     st = job.update(status="running", started=time.time())
     opts = st["options"]
-    np_ = int(opts.get("np") or physical_cores())
+    np_ = max(1, int(opts.get("np") or physical_cores()))
+    if config.PUBLIC:
+        np_ = min(np_, physical_cores())
     d = job.dir
     scf_in = d / "scf.in"
     text = scf_in.read_text()
@@ -323,6 +417,9 @@ def run_pipeline(mgr: Manager, job: Job):
         t = text
         t = qein.set_param(t, "control", "outdir", outdir)
         t = qein.set_param(t, "control", "pseudo_dir", "./pseudos/")
+        t = qein.remove_param(t, "control", "wfcdir")  # would write outside the run folder
+        if config.MAX_STEP_SECONDS:
+            t = qein.set_param(t, "control", "max_seconds", float(max(60, config.MAX_STEP_SECONDS - 30)))
         calc = str(qein.get(parsed, "control", "calculation", "scf")).lower()
         if calc not in ("scf", "relax", "vc-relax"):
             t = qein.set_param(t, "control", "calculation", "scf")

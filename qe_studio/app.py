@@ -13,11 +13,40 @@ from pathlib import Path
 
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
-from qestudio import jobs, pseudos, qein, qeout
+from qestudio import config, jobs, pseudos, qein, qeout
 
 ROOT = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
-app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_MB * 1024 * 1024
+
+
+@app.before_request
+def _auth():
+    """Optional shared password (HTTP basic auth; any user name)."""
+    if not config.PASSWORD:
+        return None
+    import hmac
+    a = request.authorization
+    if a and a.password and hmac.compare_digest(a.password, config.PASSWORD):
+        return None
+    from flask import Response
+    return Response("Password required", 401, {"WWW-Authenticate": 'Basic realm="QE Studio"'})
+
+
+def local_only():
+    if config.PUBLIC:
+        abort(403, "Not available on the public server.")
+
+
+@app.errorhandler(jobs.LimitError)
+@app.errorhandler(ValueError)
+def _limit(e):
+    return jsonify({"error": str(e)}), 400
+
+
+@app.errorhandler(413)
+def _too_big(e):
+    return jsonify({"error": f"Upload too large (limit {config.MAX_UPLOAD_MB} MB)."}), 413
 _STATUS_CACHE: dict = {}
 
 
@@ -70,8 +99,11 @@ def status():
         "launcher": m.launcher,
         "running": m.current.id if m.current else None,
         "queued": m.q.qsize(),
-        "runs_dir": win_path(jobs.RUNS),
+        "runs_dir": "" if config.PUBLIC else win_path(jobs.RUNS),
         "pseudo_library": pseudos.library_listing(),
+        "public": config.PUBLIC,
+        "limits": {"atoms": config.MAX_ATOMS, "ecutwfc": config.MAX_ECUTWFC, "kpoints": config.MAX_KPOINTS,
+                   "step_seconds": config.MAX_STEP_SECONDS, "keep_days": config.KEEP_DAYS} if config.PUBLIC else None,
     })
 
 
@@ -104,10 +136,20 @@ def inspect():
     text, name, pp = _read_upload()
     res = qein.inspect(text)
     res["name"] = name
+    if "namelists" in res:
+        try:
+            jobs.check_limits(qein.normalize_text(text)[0], qein.parse_input(qein.normalize_text(text)[0]), {})
+        except jobs.LimitError as e:
+            res.setdefault("errors", []).append(str(e))
     # pseudopotential availability
     avail = []
     for s in res.get("species", []):
         n = s["pseudo"]
+        try:
+            pseudos.safe_name(n)
+        except ValueError as e:
+            res.setdefault("errors", []).append(str(e))
+            continue
         if n in pp:
             src = "uploaded"
         else:
@@ -140,7 +182,11 @@ def submit():
 
 @app.get("/api/jobs")
 def list_jobs():
-    return jsonify(jobs._jsonable(jobs.list_jobs()))
+    items = jobs.list_jobs()
+    if config.PUBLIC:  # only the runs this browser created (ids sent by the page)
+        mine = set(filter(None, request.args.get("ids", "").split(",")))
+        items = [j for j in items if j["id"] in mine]
+    return jsonify(jobs._jsonable(items))
 
 
 @app.get("/api/jobs/<jid>")
@@ -162,7 +208,8 @@ def job_detail(jid):
         except json.JSONDecodeError:
             pass
     st["files"] = sorted(str(p.relative_to(job.dir)) for p in job.dir.rglob("*") if p.is_file())
-    st["win_dir"] = win_path(job.dir)
+    st["win_dir"] = "" if config.PUBLIC else win_path(job.dir)
+    st["public"] = config.PUBLIC
     return jsonify(jobs._jsonable(st))
 
 
@@ -182,6 +229,7 @@ def reanalyse(jid):
 
 @app.delete("/api/jobs/<jid>")
 def delete(jid):
+    local_only()
     job = job_or_404(jid)
     if job.load().get("status") in ("running", "queued"):
         return jsonify({"error": "Cancel the job before deleting it."}), 400
@@ -214,6 +262,7 @@ def job_zip(jid):
 
 @app.post("/api/jobs/<jid>/open")
 def open_folder(jid):
+    local_only()
     job = job_or_404(jid)
     try:
         subprocess.Popen(["explorer.exe", win_path(job.dir)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -306,6 +355,7 @@ def _labels_from_inputs(ins: dict, d: dict, nks: int):
 def analyze():
     folder = request.form.get("folder", "").strip()
     if folder:
+        local_only()
         p = Path(linux_path(folder))
         if not p.is_dir():
             return jsonify({"error": f"Folder not found: {folder} ({p})"}), 400
@@ -330,7 +380,6 @@ def analyze():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("QE_STUDIO_PORT", "8050"))
     jobs.manager()
-    print(f"QE Studio running at http://localhost:{port}")
-    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+    print(f"QE Studio running at http://localhost:{config.PORT}" + (" (public mode)" if config.PUBLIC else ""))
+    app.run(host=config.HOST, port=config.PORT, debug=False, threaded=True)
