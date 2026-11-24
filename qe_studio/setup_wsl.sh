@@ -6,6 +6,11 @@ set -euo pipefail
 
 MF="$HOME/miniforge3"
 if [ ! -x "$MF/bin/conda" ]; then
+  if ! command -v curl >/dev/null; then
+    echo "ERROR: curl is missing. Install it in Ubuntu, then start again:"
+    echo "       sudo apt update && sudo apt install -y curl"
+    exit 1
+  fi
   echo ">>> Installing Miniforge into $MF"
   cd "$HOME"
   curl -fL -o Miniforge3-Linux-x86_64.sh \
@@ -16,10 +21,10 @@ fi
 
 if ! "$MF/bin/conda" env list | grep -q '^qe '; then
   echo ">>> Creating conda env 'qe' (Quantum ESPRESSO + Python tools)"
-  "$MF/bin/conda" create -n qe -c conda-forge -y qe numpy scipy matplotlib ase flask plotly
+  "$MF/bin/conda" create -n qe -c conda-forge -y qe python numpy scipy matplotlib ase flask plotly
 else
-  echo ">>> Env 'qe' exists; making sure Python packages are present"
-  "$MF/bin/conda" install -n qe -c conda-forge -y numpy scipy matplotlib ase flask plotly
+  echo ">>> Env 'qe' exists; making sure QE, Python and the packages are present"
+  "$MF/bin/conda" install -n qe -c conda-forge -y qe python numpy scipy matplotlib ase flask plotly
 fi
 
 if dpkg -l 2>/dev/null | grep -q '^ii  quantum-espresso'; then

@@ -66,6 +66,22 @@ In short: **double-click → work in the browser → close the window.**
 
 After changing code on one PC, commit and push there, then run `git pull` in `qe_data_analysis` on the other.
 
+## Troubleshooting
+
+Start with `git pull` (or download the ZIP again): the start scripts fix several of these problems by themselves.
+
+| Message | Cause and fix |
+|---|---|
+| `python: not found` or `No module named flask` | QE or its Python packages are missing, for example because a `qe` conda env made by hand (`conda create -n qe qe`) has no Python. The current `start.sh` detects this and repairs the env automatically (needs internet). |
+| `ERROR: could not start Ubuntu in WSL` | Ubuntu isn't installed or isn't the default. In PowerShell, run `wsl -l -v`: Ubuntu must have the `*`. Fix with `wsl --set-default Ubuntu` (use the exact name shown, e.g. `Ubuntu-22.04`). |
+| `$'\r': command not found` | The `.sh` files got Windows line endings (copied or edited in Windows). `Start QE Studio.bat` now fixes this on every start. By hand: `sed -i 's/\r$//' qe_studio/*.sh` in Ubuntu. |
+| `ERROR: curl is missing` | In Ubuntu, run `sudo apt update && sudo apt install -y curl`, then start again. |
+| `Setup failed` | Usually no internet during the first start. Check the connection and start again; setup continues where it stopped. |
+| Browser says it can't connect | Wait 2–3 seconds and refresh. If it persists, read the messages in the console window. |
+| `Address already in use` | QE Studio is already running in another window; use that one or close it first. |
+
+If a message isn't listed here, copy the full text from the console window.
+
 ## Supported materials
 
 QE Studio works with any pw.x `scf.in`, not just the silicon example:
