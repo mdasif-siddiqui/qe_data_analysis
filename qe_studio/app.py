@@ -11,9 +11,10 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import numpy as np
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
-from qestudio import config, jobs, pseudos, qein, qeout
+from qestudio import config, jobs, phonon, pseudos, qein, qeout
 
 ROOT = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
@@ -202,6 +203,7 @@ def job_detail(jid):
     # live tail of the currently running program
     cur = st.get("current_step")
     names = {"scf": "scf.out", "bands": "bands.out", "nscf": "nscf.out", "dos": "dos.out", "pdos": "projwfc.out",
+             "ph_scf": "phonon/scf.out", "ph": "phonon/ph.out", "q2r": "phonon/q2r.out", "matdyn": "phonon/matdyn_dos.out",
              "bandsx": "bands_pp.out"}
     if st.get("status") == "running" and cur in names and (job.dir / names[cur]).exists():
         st["live"] = "\n".join((job.dir / names[cur]).read_text(errors="replace").splitlines()[-25:])
@@ -276,10 +278,57 @@ def open_folder(jid):
 
 
 # ----------------------------------------------------------------------------- analyse existing outputs
+def _phonon_file(p: Path) -> dict | None:
+    """matdyn.x frequency (.freq) or phonon DOS files; None if p is neither."""
+    try:
+        head = p.read_text(errors="replace")[:300]
+    except OSError:
+        return None
+    if "&plot" in head and "nbnd" in head:
+        f = phonon.parse_freq(p)
+        x = qeout.kpath_distance(f["q"])
+        ticks = []
+        for i in qeout.detect_kinks(f["q"]):
+            lbl = "Γ" if np.allclose(f["q"][i], 0, atol=1e-6) else ""
+            ticks.append({"x": float(x[i]), "label": lbl})
+        fmin = float(f["freq"].min())
+        return {"file": p.name, "program": "MATDYN", "calculation": "phonon dispersion", "job_done": None, "errors": [],
+                "phonon_freq": {"x": x.tolist(), "freq": f["freq"].T.tolist(), "ticks": ticks,
+                                "min_cm1": fmin, "max_cm1": float(f["freq"].max()),
+                                "stable": fmin > phonon.IMAG_THRESHOLD_CM1}}
+    if re.search(r"Frequency\s*\[cm\^-1\]", head):
+        d = phonon.parse_phdos(p)
+        natoms = max(1, len(d["pdos_atoms"]))
+        th = phonon.thermodynamics(d["freq"], d["dos"], natoms)
+        return {"file": p.name, "program": "MATDYN", "calculation": "phonon DOS", "job_done": None, "errors": [],
+                "phonon_dos": {"freq": d["freq"].tolist(), "total": d["dos"].tolist(), "natoms": natoms,
+                               "natoms_from_pdos": len(d["pdos_atoms"]) > 0, "thermo": th,
+                               "zpe_mev_atom": th["zpe_ev_atom"] * 1000, "cv_300": phonon.value_at(th, "Cv", 300)}}
+    return None
+
+
+def _ph_out_summary(d: dict, path: Path) -> None:
+    """Add the lowest/highest frequency over all q-points of a ph.x output."""
+    txt = path.read_text(errors="replace")
+    fr = [float(x) for x in re.findall(r"freq \(\s*\d+\)\s*=\s*[-\d.]+\s*\[THz\]\s*=\s*([-\d.]+)\s*\[cm-1\]", txt)]
+    if fr:
+        d["ph_min_cm1"], d["ph_max_cm1"] = min(fr), max(fr)
+        d["ph_nq"] = len(re.findall(r"Diagonalizing the dynamical matrix", txt))
+
+
 def _analyse_paths(paths: list[Path]) -> dict:
     outs = [p for p in paths if p.suffix.lower() in (".out", ".log", ".txt") or ".out" in p.name]
     ins = {p.name: p for p in paths if p.suffix.lower() == ".in"}
     items = []
+    for p in sorted(paths):
+        if p in outs or p.suffix.lower() in (".in", ".upf", ".gp", ".json", ".err"):
+            continue
+        try:
+            ph = _phonon_file(p)
+        except Exception as e:
+            ph = {"file": p.name, "program": "MATDYN", "job_done": None, "errors": [f"could not parse: {e}"]}
+        if ph:
+            items.append(ph)
     for p in sorted(outs):
         try:
             d = qeout.parse_any(p)
@@ -288,6 +337,8 @@ def _analyse_paths(paths: list[Path]) -> dict:
             continue
         if d.get("program") == "unknown":
             continue
+        if d.get("program") == "PHONON":
+            _ph_out_summary(d, p)
         items.append(d)
     # reference levels (VBM / E_F) from SCF files for band plots
     scfs = [d for d in items if d.get("program") == "PWSCF" and d.get("calculation") in ("scf", "relax", "vc-relax")]

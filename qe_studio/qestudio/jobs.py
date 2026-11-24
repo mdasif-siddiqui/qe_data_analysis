@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import config, pseudos, qein, qeout
+from . import config, phonon, pseudos, qein, qeout
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNS = ROOT / "runs"
@@ -291,6 +291,11 @@ def create_job(scf_text: str, scf_name: str, pseudo_files: dict[str, bytes], opt
         steps += [{"name": "nscf", "label": "NSCF on dense k-grid (pw.x)"},
                   {"name": "dos", "label": "Density of states (dos.x)"},
                   {"name": "pdos", "label": "Projected DOS (projwfc.x)"}]
+    if options.get("phonons"):
+        steps += [{"name": "ph_scf", "label": "Phonons: tight SCF (pw.x)"},
+                  {"name": "ph", "label": "Phonons: DFPT on q-grid (ph.x)"},
+                  {"name": "q2r", "label": "Force constants (q2r.x)"},
+                  {"name": "matdyn", "label": "Dispersion + phonon DOS (matdyn.x)"}]
     if options.get("conv"):
         steps += [{"name": "conv_ecut", "label": "Cutoff convergence test"},
                   {"name": "conv_k", "label": "k-point convergence test"}]
@@ -323,6 +328,10 @@ def check_limits(text: str, parsed: dict, options: dict):
     for g in grids:
         if g and int(np.prod(g)) > config.MAX_KPOINTS:
             raise LimitError(f"k-grid {'x'.join(map(str, g))} is larger than this server allows ({config.MAX_KPOINTS} points).")
+    if options.get("phonons") and options.get("ph_qgrid"):
+        qg = [int(x) for x in options["ph_qgrid"]]
+        if config.PUBLIC and int(np.prod(qg)) > 64:
+            raise LimitError("Phonon q-grid too large for this server (at most 4x4x4).")
     if config.PUBLIC:
         for key in ("ecut_list", "k_list"):
             vals = [v for v in re.split(r"[,\s]+", str(options.get(key) or "")) if v]
@@ -530,6 +539,18 @@ def run_pipeline(mgr: Manager, job: Job):
                 except Exception as e:
                     job.step(name, status="failed", error=str(e))
 
+    # ---- phonons
+    if opts.get("phonons"):
+        try:
+            run_phonons(mgr, job, base_calc_text, prefix, opts, np_)
+        except Exception as e:
+            job.log(f"Phonons stopped: {e}")
+            for s_ in ("ph_scf", "ph", "q2r", "matdyn"):
+                cur = next((x for x in job.load()["steps"] if x["name"] == s_), {})
+                if cur.get("status") in ("pending", "running"):
+                    job.step(s_, status="skipped" if cur.get("status") == "pending" else "failed",
+                             **({} if cur.get("status") == "pending" else {"error": str(e)}))
+
     # ---- convergence tests
     if opts.get("conv"):
         _timed(job, "conv_ecut", lambda: convergence(mgr, job, base_calc_text, "ecut", opts, np_))
@@ -548,6 +569,120 @@ def run_pipeline(mgr: Manager, job: Job):
 
 def _slim(d: dict) -> dict:
     return {k: v for k, v in d.items() if k not in ("bands",)}
+
+
+# --------------------------------------------------------------------------- phonons
+def default_qgrid(atoms) -> list[int]:
+    """About 4 q-points along the shortest reciprocal-space direction, fewer for big cells."""
+    return qein.kgrid_for_density(atoms, 4 if len(atoms) <= 8 else 2)
+
+
+def run_phonons(mgr: Manager, job: Job, text: str, prefix: str, opts: dict, np_: int):
+    """Tight SCF -> ph.x (DFPT on a q-grid) -> q2r.x -> matdyn.x (path + DOS), in runs/<id>/phonon/.
+
+    Uses its own scratch folder: ph.x needs the save directory of a plain SCF, and the bands/NSCF
+    steps overwrite the wavefunctions in the main one.
+    """
+    pd = job.dir / "phonon"
+    pd.mkdir(exist_ok=True)
+    ph_scratch = job.scratch / "phonon"
+    ph_scratch.mkdir(parents=True, exist_ok=True)
+    outdir = str(ph_scratch) + "/"
+    atoms = qein.read_structure(text)
+    q = [int(x) for x in (opts.get("ph_qgrid") or default_qgrid(atoms))]
+    job.log(f"Phonon q-grid: {q[0]}x{q[1]}x{q[2]}")
+
+    def ph_scf():
+        t = qein.set_param(text, "control", "calculation", "scf")
+        t = qein.set_param(t, "control", "outdir", outdir)
+        t = qein.set_param(t, "control", "pseudo_dir", "../pseudos/")
+        t = qein.set_param(t, "control", "tprnfor", True)
+        cthr = qein.get(qein.parse_input(text), "electrons", "conv_thr", 1e-6)
+        try:
+            cthr = float(cthr)
+        except (TypeError, ValueError):
+            cthr = 1e-6
+        t = qein.set_param(t, "electrons", "conv_thr", min(cthr, 1e-12 * max(1, len(atoms))))
+        (pd / "scf.in").write_text(t)
+        rc = mgr.run(job, "pw.x", pd / "scf.in", pd / "scf.out", np_, cwd=pd)
+        _check(job, "ph_scf", pd / "scf.out", rc)
+    _timed(job, "ph_scf", ph_scf)
+
+    def ph():
+        (pd / "ph.in").write_text(phonon.ph_input(prefix, outdir, q))
+        rc = mgr.run(job, "ph.x", pd / "ph.in", pd / "ph.out", np_, cwd=pd)
+        _check(job, "ph", pd / "ph.out", rc)
+    _timed(job, "ph", ph)
+
+    def q2r():
+        (pd / "q2r.in").write_text(phonon.q2r_input(prefix))
+        rc = mgr.run(job, "q2r.x", pd / "q2r.in", pd / "q2r.out", 1, use_mpi=False, cwd=pd)
+        _check(job, "q2r", pd / "q2r.out", rc)
+    _timed(job, "q2r", q2r)
+
+    def matdyn():
+        kp = qein.make_kpath(atoms, path=(opts.get("kpath") or "").strip() or None, density=25)
+        (pd / "qpath.json").write_text(json.dumps(kp, indent=1))
+        (pd / "matdyn.in").write_text(phonon.matdyn_path_input(prefix, kp["card"]))
+        rc = mgr.run(job, "matdyn.x", pd / "matdyn.in", pd / "matdyn.out", 1, use_mpi=False, cwd=pd)
+        _check(job, "matdyn", pd / "matdyn.out", rc)
+        grid = qein.kgrid_for_density(atoms, 24 if len(atoms) <= 8 else 16)
+        (pd / "matdyn_dos.in").write_text(phonon.matdyn_dos_input(prefix, grid))
+        rc = mgr.run(job, "matdyn.x", pd / "matdyn_dos.in", pd / "matdyn_dos.out", 1, use_mpi=False, cwd=pd)
+        _check(job, "matdyn", pd / "matdyn_dos.out", rc)
+    _timed(job, "matdyn", matdyn)
+
+
+def analyse_phonons(d: Path, prefix: str, symbols: list[str]) -> dict | None:
+    pd = d / "phonon"
+    fq = pd / f"{prefix}.freq"
+    if not fq.exists():
+        return None
+    natoms = len(symbols)
+    res: dict = {}
+    f = phonon.parse_freq(fq)
+    kp = json.loads((pd / "qpath.json").read_text()) if (pd / "qpath.json").exists() else None
+    x = qeout.kpath_distance(f["q"], kp["jumps"] if kp else [])
+    ticks = []
+    if kp:
+        for lbl, i in zip(kp["labels"], kp["indices"]):
+            if i < len(x):
+                name = qein.pretty_label(lbl)
+                if ticks and abs(ticks[-1]["x"] - x[i]) < 1e-9:
+                    ticks[-1]["label"] += "|" + name
+                else:
+                    ticks.append({"x": float(x[i]), "label": name})
+    res["x"] = x.tolist()
+    res["freq"] = f["freq"].T.tolist()            # [branch][q], cm^-1
+    res["ticks"] = ticks
+    fmin, fmax = float(f["freq"].min()), float(f["freq"].max())
+    res["min_cm1"], res["max_cm1"] = fmin, fmax
+    # Gamma frequencies after the acoustic sum rule (from the path), and before it (from fildyn1)
+    g_idx = next((i for i, q in enumerate(f["q"]) if np.allclose(q, 0, atol=1e-6)), None)
+    if g_idx is not None:
+        res["gamma_cm1"] = f["freq"][g_idx].tolist()
+    dyn1 = pd / f"{prefix}.dyn1"
+    if dyn1.exists():
+        raw = phonon.parse_dyn_gamma(dyn1)
+        res["gamma_raw_cm1"] = raw
+        res["asr_violation_cm1"] = float(max(abs(v) for v in sorted(raw, key=abs)[:3])) if len(raw) >= 3 else None
+    dos_f = pd / f"{prefix}.phdos"
+    if dos_f.exists():
+        dd = phonon.parse_phdos(dos_f)
+        res["dos"] = {"freq": dd["freq"].tolist(), "total": dd["dos"].tolist(), "elements": {}}
+        for i, sym in enumerate(symbols[: len(dd["pdos_atoms"])]):
+            cur = res["dos"]["elements"].setdefault(sym, np.zeros_like(dd["dos"]))
+            res["dos"]["elements"][sym] = cur + dd["pdos_atoms"][i]
+        res["dos"]["elements"] = {k: v.tolist() for k, v in res["dos"]["elements"].items()}
+        th = phonon.thermodynamics(dd["freq"], dd["dos"], natoms)
+        res["thermo"] = th
+        res["zpe_mev_atom"] = th["zpe_ev_atom"] * 1000
+        res["cv_300"] = phonon.value_at(th, "Cv", 300)
+        res["s_300"] = phonon.value_at(th, "S", 300)
+    m = re.search(r"nq1\s*=\s*(\d+),\s*nq2\s*=\s*(\d+),\s*nq3\s*=\s*(\d+)", (pd / "ph.in").read_text()) if (pd / "ph.in").exists() else None
+    res["qgrid"] = [int(m.group(i)) for i in (1, 2, 3)] if m else None
+    res["stable"] = fmin > phonon.IMAG_THRESHOLD_CM1
+    return res
 
 
 # --------------------------------------------------------------------------- convergence
@@ -758,9 +893,16 @@ def analyse_job(job: Job) -> dict:
         if f.exists():
             res[f"conv_{kind}"] = convergence_summary(json.loads(f.read_text()), nat,
                                                       float(st["options"].get("conv_thr_mev") or 1.0))
+    # phonons
+    try:
+        ph = analyse_phonons(d, prefix, res.get("structure", {}).get("symbols", []))
+        if ph:
+            res["phonons"] = ph
+    except Exception as e:
+        res["phonons_error"] = str(e)
     # checks
     checks = []
-    for out in sorted(d.glob("*.out")) + sorted(d.glob("conv_*/*/scf.out")):
+    for out in sorted(d.glob("*.out")) + sorted(d.glob("conv_*/*/scf.out")) + sorted(d.glob("phonon/*.out")):
         txt = out.read_text(errors="replace")
         rel = str(out.relative_to(d))
         if "JOB DONE" not in txt:
@@ -786,6 +928,18 @@ def analyse_job(job: Job) -> dict:
             checks.append({"level": "warn", "msg": (
                 f"The {name} convergence test did not converge to {conv.get('threshold_mev_atom', 1)} meV/atom within the "
                 "tested values. Test larger values before trusting total energies.")})
+    ph = res.get("phonons")
+    if ph:
+        if not ph["stable"]:
+            checks.append({"level": "warn", "msg": (
+                f"Imaginary phonon frequencies (down to {ph['min_cm1']:.0f} cm⁻¹): the structure is dynamically unstable, "
+                "not relaxed, or the q-grid / cutoff / conv_thr are not converged. Thermodynamics ignore these modes.")})
+        if ph.get("asr_violation_cm1") and ph["asr_violation_cm1"] > 30:
+            checks.append({"level": "info", "msg": (
+                f"Acoustic modes at Γ were {ph['asr_violation_cm1']:.0f} cm⁻¹ before the acoustic sum rule was applied: "
+                "consider a higher ecutwfc or a denser k-grid for more accurate phonons.")})
+        if summary.get("total_force") and summary["total_force"] > 1e-3:
+            checks.append({"level": "warn", "msg": "Forces are not zero: phonons should be calculated for a relaxed structure."})
     res["checks"] = checks
     res["summary"] = _jsonable(summary)
     tmp = d / "results.json.tmp"

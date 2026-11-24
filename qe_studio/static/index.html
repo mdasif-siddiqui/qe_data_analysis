@@ -66,6 +66,11 @@
         <div class="field"><span>NSCF k-grid</span><input id="o-nscf" placeholder="auto (2× SCF grid)"></div>
       </div>
       <div class="opt">
+        <label class="chk"><input type="checkbox" id="o-ph"> Phonons</label>
+        <div class="field"><span>q-grid</span><input id="o-qgrid" placeholder="auto (4 4 4)"></div>
+        <div class="muted small">Dispersion, phonon DOS and thermodynamics (ph.x). Slow: silicon with 4×4×4 takes about 20 minutes on 4 cores.</div>
+      </div>
+      <div class="opt">
         <label class="chk"><input type="checkbox" id="o-conv"> Convergence tests</label>
         <div class="field"><span>ecutwfc (Ry)</span><input id="o-ecut" placeholder="auto: 0.5×…2× of yours"></div>
         <div class="field"><span>k (largest)</span><input id="o-klist" placeholder="auto"></div>
@@ -126,6 +131,23 @@
       <div class="card"><div class="card-h"><h2>Projected DOS</h2></div><div id="p-pdos" class="plot"></div></div>
       <div class="card"><div class="card-h"><h2>SCF convergence</h2></div><div id="p-scf" class="plot"></div></div>
     </div>
+    <div id="ph-section" hidden>
+      <div class="tiles" id="ph-tiles"></div>
+      <div class="card">
+        <div class="card-h"><h2>Phonon dispersion &amp; density of states</h2>
+          <div class="ctrl">Units <select id="ph-unit"><option value="cm">cm⁻¹</option><option value="thz">THz</option><option value="mev">meV</option></select></div></div>
+        <div id="p-phonons" class="plot plot-l"></div>
+        <div class="muted small" id="ph-note"></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><div class="card-h"><h2>Thermodynamics (harmonic)</h2>
+          <div class="ctrl"><select id="th-key">
+            <option value="Cv">Heat capacity C_v</option><option value="S">Entropy S</option>
+            <option value="F">Free energy F</option><option value="U">Internal energy U</option></select></div></div>
+          <div id="p-thermo" class="plot"></div><div class="muted small" id="th-note"></div></div>
+        <div class="card"><div class="card-h"><h2>Frequencies at Γ</h2></div><div id="ph-gamma"></div></div>
+      </div>
+    </div>
     <div class="grid2" id="conv-row" hidden>
       <div class="card"><div class="card-h"><h2>Cutoff convergence</h2></div><div id="p-conv-ecut" class="plot"></div><div id="t-conv-ecut"></div></div>
       <div class="card"><div class="card-h"><h2>k-point convergence</h2></div><div id="p-conv-k" class="plot"></div><div id="t-conv-k"></div></div>
@@ -145,7 +167,7 @@
     <div class="grid2 tight">
       <label class="drop" id="drop2">
         <input type="file" id="files-an" multiple>
-        <strong>Drop .out files here</strong> (pw.x, dos.x, projwfc.x, bands.x…).<br>
+        <strong>Drop .out files here</strong> (pw.x, ph.x, dos.x, projwfc.x, bands.x, matdyn .freq / phonon DOS…).<br>
         <span class="muted">Add the matching bands .in to get k-point labels.</span>
       </label>
       <div class="local-only">
@@ -168,6 +190,7 @@
       <div class="card" id="a-relax-card" hidden><div class="card-h"><h2>Relaxation</h2></div><div id="a-relax" class="plot"></div></div>
       <div class="card" id="a-conv-card" hidden><div class="card-h"><h2>Cutoff / k-point convergence</h2></div><div id="a-conv" class="plot"></div></div>
     </div>
+    <div id="a-phonons"></div>
     <div id="a-bands"></div>
   </div>
 </section>

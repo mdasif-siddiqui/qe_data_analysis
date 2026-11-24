@@ -336,6 +336,8 @@ $("#run").addEventListener("click", async () => {
     nscf_grid: $("#o-nscf").value.trim() ? $("#o-nscf").value.trim().split(/[\s,x×]+/).map(Number) : null,
     ecut_list: $("#o-ecut").value.trim(), k_list: $("#o-klist").value.trim(), conv_thr_mev: Number($("#o-thr").value) || 1,
     np: Number($("#o-np").value) || SYS.physical_cores, download_pseudos: $("#o-dl").checked,
+    phonons: $("#o-ph").checked,
+    ph_qgrid: $("#o-qgrid").value.trim() ? $("#o-qgrid").value.trim().split(/[\s,x×]+/).map(Number) : null,
   };
   const fd = formData();
   fd.append("options", JSON.stringify(opts));
@@ -437,6 +439,7 @@ function renderResults(st) {
   $("#conv-row").hidden = !hasConv;
   if (R.conv_ecut) { plotConv($("#p-conv-ecut"), R.conv_ecut, "ecutwfc (Ry)"); $("#t-conv-ecut").innerHTML = convTable(R.conv_ecut); }
   if (R.conv_k) { plotConv($("#p-conv-k"), R.conv_k, "k-point grid"); $("#t-conv-k").innerHTML = convTable(R.conv_k); }
+  renderPhonons(R);
   plotStructure($("#p-struct"), R.structure);
   // details
   const st0 = R.structure || {};
@@ -479,6 +482,72 @@ function drawBandsAndDos() {
 }
 ["#e-min", "#e-max", "#show-pdos"].forEach((s) => $(s).addEventListener("change", drawBandsAndDos));
 
+/* ------------------------------------------------------------------ phonons */
+const PH_UNITS = { cm: { f: 1, label: "cm⁻¹", d: 1 }, thz: { f: 0.0299792458, label: "THz", d: 2 }, mev: { f: 0.1239841984, label: "meV", d: 2 } };
+function plotPhonons(el, ph, unitKey) {
+  const U = PH_UNITS[unitKey], col = SERIES();
+  const traces = ph.freq.map((br, i) => ({ x: ph.x, y: br.map((v) => v * U.f), mode: "lines", type: "scatter",
+    line: { color: col[0], width: 2 }, showlegend: false, name: `branch ${i + 1}`,
+    hovertemplate: `branch ${i + 1}<br>%{y:.${U.d}f} ${U.label}<extra></extra>` }));
+  const hasDos = ph.dos && ph.dos.freq;
+  const lay = layout({
+    xaxis: axis({ range: [0, ph.x[ph.x.length - 1]], tickvals: ph.ticks.map((t) => t.x), ticktext: ph.ticks.map((t) => t.label),
+      gridcolor: css("--axis"), domain: [0, hasDos ? 0.76 : 1], tickfont: { size: 13, color: css("--text-primary") } }),
+    yaxis: axis({ title: `Frequency (${U.label})`, rangemode: "tozero" }),
+    shapes: [{ type: "line", xref: "paper", x0: 0, x1: 1, y0: 0, y1: 0, line: { color: css("--muted"), width: 1, dash: "dash" } }],
+  });
+  if (hasDos) {
+    const y = ph.dos.freq.map((v) => v * U.f);
+    traces.push({ x: ph.dos.total.map((v) => v / U.f), y, xaxis: "x2", type: "scatter", mode: "lines", name: "total DOS",
+      line: { color: css("--muted"), width: 1.5 }, fill: "tozerox", fillcolor: "rgba(137,135,129,0.18)", hoverinfo: "skip" });
+    const els = Object.entries(ph.dos.elements || {});
+    if (els.length > 1) els.slice(0, 7).forEach(([k, v], i) => traces.push({ x: v.map((q) => q / U.f), y, xaxis: "x2", type: "scatter",
+      mode: "lines", name: k, line: { color: col[(i + 1) % 8], width: 2 }, hoverinfo: "skip" }));
+    lay.xaxis2 = axis({ domain: [0.79, 1], title: `DOS (states/${U.label})`, showgrid: false, rangemode: "tozero" });
+    lay.showlegend = els.length > 1;
+  }
+  Plotly.react(el, traces, lay, CONFIG);
+}
+function plotThermo(el, th, key) {
+  const meta = { Cv: ["Heat capacity C_v", "J/(mol·K)"], S: ["Entropy S", "J/(mol·K)"], F: ["Free energy F", "kJ/mol"], U: ["Internal energy U", "kJ/mol"] }[key];
+  const traces = [{ x: th.T, y: th[key], mode: "lines", line: { color: css("--s1"), width: 2 }, showlegend: false,
+    hovertemplate: `T = %{x:.0f} K<br>${meta[0]} = %{y:.3f} ${meta[1]}<extra></extra>` }];
+  const shapes = [], ann = [];
+  if (key === "Cv") {
+    shapes.push({ type: "line", xref: "paper", x0: 0, x1: 1, y0: 24.943, y1: 24.943, line: { color: css("--muted"), width: 1, dash: "dash" } });
+    ann.push({ xref: "paper", x: 1, y: 24.943, text: "3R (Dulong–Petit)", showarrow: false, xanchor: "right", yshift: 9, font: { size: 11, color: css("--text-secondary") } });
+  }
+  Plotly.react(el, traces, layout({ xaxis: axis({ title: "Temperature (K)" }), yaxis: axis({ title: `${meta[0]} (${meta[1]} per mole of atoms)` }),
+    shapes, annotations: ann, hovermode: "x unified" }), CONFIG);
+}
+function renderPhonons(R) {
+  const ph = R.phonons;
+  $("#ph-section").hidden = !ph;
+  if (!ph) return;
+  const U = PH_UNITS[$("#ph-unit").value];
+  const opt = (ph.gamma_cm1 || []).filter((v) => v > 5);
+  $("#ph-tiles").innerHTML = [
+    tile("Phonon stability", ph.stable ? "Stable" : "Unstable", ph.stable ? "no imaginary frequencies" : `lowest ${ph.min_cm1.toFixed(0)} cm⁻¹ (imaginary)`),
+    tile("Highest frequency", `${(ph.max_cm1 * U.f).toFixed(U.d)} <small>${U.label}</small>`, opt.length ? `optical at Γ: ${(opt[opt.length - 1] * U.f).toFixed(U.d)} ${U.label}` : ""),
+    tile("Zero-point energy", `${fmt(ph.zpe_mev_atom, 1)} <small>meV/atom</small>`, ""),
+    tile("C_v at 300 K", `${fmt(ph.cv_300, 2)} <small>J/(mol·K)</small>`, `S(300 K) = ${fmt(ph.s_300, 2)} J/(mol·K) · 3R = 24.94`),
+  ].join("");
+  plotPhonons($("#p-phonons"), ph, $("#ph-unit").value);
+  $("#ph-note").textContent = `q-grid ${ph.qgrid ? ph.qgrid.join("×") : "?"} (ph.x), interpolated along the path by matdyn.x with the acoustic sum rule applied.` +
+    (ph.asr_violation_cm1 !== undefined && ph.asr_violation_cm1 !== null ? ` Acoustic modes at Γ before the sum rule: ${ph.asr_violation_cm1.toFixed(1)} cm⁻¹.` : "");
+  if (ph.thermo) {
+    plotThermo($("#p-thermo"), ph.thermo, $("#th-key").value);
+    $("#th-note").textContent = "Harmonic approximation from the phonon DOS, per mole of atoms." +
+      (ph.thermo.imaginary_fraction > 0.001 ? ` ${(ph.thermo.imaginary_fraction * 100).toFixed(1)}% of modes are imaginary and left out.` : "");
+  }
+  const g = ph.gamma_cm1 || [], raw = ph.gamma_raw_cm1 || [];
+  $("#ph-gamma").innerHTML = g.length ? `<table class="tbl"><thead><tr><th>Mode</th><th class="num">cm⁻¹</th><th class="num">THz</th><th class="num">meV</th><th class="num">before ASR (cm⁻¹)</th></tr></thead><tbody>` +
+    g.map((v, i) => `<tr><td>${i + 1}${i < 3 ? " (acoustic)" : ""}</td><td class="num">${v.toFixed(1)}</td><td class="num">${(v * PH_UNITS.thz.f).toFixed(2)}</td><td class="num">${(v * PH_UNITS.mev.f).toFixed(2)}</td><td class="num">${raw[i] !== undefined ? raw[i].toFixed(1) : "–"}</td></tr>`).join("") +
+    "</tbody></table>" : '<div class="empty">Γ is not on the q-path.</div>';
+}
+$("#ph-unit").addEventListener("change", () => JOB && JOB.results && renderPhonons(JOB.results));
+$("#th-key").addEventListener("change", () => JOB && JOB.results && JOB.results.phonons && plotThermo($("#p-thermo"), JOB.results.phonons.thermo, $("#th-key").value));
+
 /* ------------------------------------------------------------------ analyse outputs */
 $("#files-an").addEventListener("change", (e) => analyzeFiles(e.target.files));
 $("#an-go").addEventListener("click", async () => {
@@ -492,13 +561,17 @@ async function analyzeFiles(list) {
 }
 const AN_COLS = [
   ["file", "File"], ["program", "Program"], ["calculation", "Type"], ["job_done", "JOB DONE"], ["converged", "SCF converged"],
-  ["energy_ry", "Energy (Ry)", 6], ["fermi_ev", "E_F (eV)", 3], ["homo_ev", "HOMO (eV)", 3], ["lumo_ev", "LUMO (eV)", 3], ["gap", "Gap (eV)", 3],
+  ["energy_ry", "Energy (Ry)", 6], ["ph_range", "Phonons (cm⁻¹)"], ["fermi_ev", "E_F (eV)", 3], ["homo_ev", "HOMO (eV)", 3], ["lumo_ev", "LUMO (eV)", 3], ["gap", "Gap (eV)", 3],
   ["total_force", "Force (Ry/bohr)", 5], ["pressure_kbar", "P (kbar)", 2], ["total_mag", "Mag (μB)", 2], ["ecutwfc", "ecutwfc", 1],
   ["nks", "k-points", 0], ["scf_iterations", "SCF iter", 0], ["wall_s", "Wall (s)", 1], ["version", "QE"],
 ];
 let AN = null;
 function anValue(it, key) {
   if (key === "converged") return it.program === "PWSCF" ? !it.not_converged : null;
+  if (key === "ph_range") {
+    const lo = it.phonon_freq ? it.phonon_freq.min_cm1 : it.ph_min_cm1, hi = it.phonon_freq ? it.phonon_freq.max_cm1 : it.ph_max_cm1;
+    return lo === undefined ? null : `${lo.toFixed(0)} … ${hi.toFixed(0)}`;
+  }
   if (key === "gap") return it.gap ? (it.gap.metal ? "metal" : it.gap.gap_ev) : it.homo_lumo_gap_ev ?? null;
   return it[key];
 }
@@ -515,7 +588,9 @@ function renderAnalysis(res) {
     }).join("")}</tr>`).join("") + "</tbody>";
   const checks = [];
   items.forEach((it) => {
-    if (!it.job_done) checks.push(["error", `${it.file}: does not end with JOB DONE (crashed, still running or killed).`]);
+    if (it.job_done === false) checks.push(["error", `${it.file}: does not end with JOB DONE (crashed, still running or killed).`]);
+    const phMin = it.phonon_freq ? it.phonon_freq.min_cm1 : it.ph_min_cm1;
+    if (phMin !== undefined && phMin < -10) checks.push(["warn", `${it.file}: imaginary phonon frequencies (down to ${phMin.toFixed(0)} cm⁻¹).`]);
     if (it.not_converged) checks.push(["error", `${it.file}: convergence NOT achieved.`]);
     (it.errors || []).forEach((e) => checks.push(["error", `${it.file}: ${e}`]));
     if (it.relax && !it.relax.converged) checks.push(["warn", `${it.file}: relaxation did not reach the force/energy criteria.`]);
@@ -564,6 +639,19 @@ function renderAnalysis(res) {
     const rows = pts.map((it) => ({ value: byEcut ? it.ecutwfc : it.nks, label: `${it.file} = ${byEcut ? it.ecutwfc : it.nks}`, delta_mev_atom: (it.energy_ry - ref) * RY * 1000 / nat }));
     plotConv($("#a-conv"), { rows, threshold_mev_atom: 1 }, byEcut ? "ecutwfc (Ry)" : "irreducible k-points");
   }
+  // phonons
+  const phItems = items.filter((it) => it.phonon_freq || it.phonon_dos);
+  const dosItem = items.find((it) => it.phonon_dos);
+  $("#a-phonons").innerHTML = phItems.map((it, i) => `<div class="card bandcard"><div class="card-h"><h2>${it.phonon_freq ? "Phonon dispersion" : "Phonon DOS & thermodynamics"} · ${esc(it.file)}</h2>
+    <span class="muted small">${it.phonon_freq ? `${it.phonon_freq.stable ? "no imaginary modes" : "imaginary modes!"} · max ${it.phonon_freq.max_cm1.toFixed(1)} cm⁻¹`
+      : `ZPE ${it.phonon_dos.zpe_mev_atom.toFixed(1)} meV/atom · C_v(300 K) ${it.phonon_dos.cv_300.toFixed(2)} J/(mol·K)${it.phonon_dos.natoms_from_pdos ? "" : " · atom count unknown: per-atom values assume 1 atom"}`}</span></div>
+    <div class="plot" id="aph-${i}"></div></div>`).join("");
+  phItems.forEach((it, i) => {
+    if (it.phonon_freq) {
+      const dos = dosItem ? { freq: dosItem.phonon_dos.freq, total: dosItem.phonon_dos.total, elements: {} } : null;
+      plotPhonons($(`#aph-${i}`), { ...it.phonon_freq, dos }, "cm");
+    } else plotThermo($(`#aph-${i}`), it.phonon_dos.thermo, "Cv");
+  });
   // band structures
   const bandItems = items.filter((it) => it.band_plot);
   $("#a-bands").innerHTML = bandItems.map((it, i) => `<div class="card bandcard"><div class="card-h"><h2>Bands · ${esc(it.file)}</h2>

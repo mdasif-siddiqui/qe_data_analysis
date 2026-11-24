@@ -4,9 +4,10 @@
 calculations on Windows via WSL Ubuntu.
 
 Give it a pw.x `scf.in` and it validates the input, runs SCF → band structure → DOS/PDOS (plus optional
-cutoff and k-point convergence tests), and shows the results interactively: band gap (direct/indirect, VBM/CBM
-location), band structure with DOS, projected DOS, SCF convergence, convergence-test recommendations and Löwdin charges.
-It can also analyse existing `.out` files.
+phonons and cutoff/k-point convergence tests), and shows the results interactively: band gap (direct/indirect, VBM/CBM
+location), band structure with DOS, projected DOS, phonon dispersion and DOS, heat capacity and other harmonic
+thermodynamics, SCF convergence, convergence-test recommendations and Löwdin charges. It can also analyse existing
+output files.
 
 ## Installation (Windows 10/11)
 
@@ -93,8 +94,17 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
 - **Metals** (`occupations = 'smearing'`): detected from bands crossing the Fermi level; plots use E_F = 0.
 - **Magnetic materials** (`nspin = 2`): spin-up and spin-down bands and DOS, plus the magnetisation.
 - **High-symmetry k-path:** chosen automatically for the lattice type, or entered by hand (e.g. `GXMGR`).
+- **Phonons** (optional, tick **Phonons**): DFPT with `ph.x` on a q-grid (default 4×4×4), then `q2r.x` and `matdyn.x`.
+  - **Dispersion** along the same path as the bands, with the phonon DOS beside it (per element), in cm⁻¹, THz or meV.
+  - **Stability check:** warns about imaginary frequencies and large acoustic-sum-rule corrections.
+  - **Frequencies at Γ** in a table, before and after the acoustic sum rule.
+  - **Harmonic thermodynamics** from the phonon DOS: zero-point energy, heat capacity C_v(T), entropy, free and internal
+    energy from 0 to 1000 K, per mole of atoms.
+  - **Cost:** much slower than bands/DOS. Silicon with a 4×4×4 q-grid takes about 20 minutes on 4 cores; for bigger
+    cells start with 2×2×2.
 
-The **Analyse outputs** tab reads existing pw.x, dos.x and projwfc.x outputs of any material.
+The **Analyse outputs** tab reads existing pw.x, ph.x, dos.x and projwfc.x outputs, matdyn.x `.freq` files
+(dispersion) and phonon DOS files (DOS plus thermodynamics) of any material.
 
 ## Limitations
 
@@ -109,7 +119,13 @@ The **Analyse outputs** tab reads existing pw.x, dos.x and projwfc.x outputs of 
   not the relaxed one. For bands of the relaxed structure, put the final coordinates into a new scf input.
 - **Spin-orbit / non-collinear** (`noncolin`, `lspinorb`): basic support only, the least tested part.
 - **Large systems:** on a 4-core laptop, more than about 20–30 atoms or high cutoffs take from many minutes to hours.
-- **Other QE programs** (`ph.x`, `cp.x`, `neb.x`, …) are not supported.
+- **Phonons:**
+  - **Physics not included:** no LO–TO splitting (dielectric constant and Born charges are not calculated), so optical
+    modes at Γ of polar materials (e.g. GaAs, NaCl) are not fully correct. No anharmonic effects or thermal expansion.
+  - **Inputs:** phonons need a relaxed structure (zero forces) and tight convergence; the app runs its own SCF with
+    `conv_thr` ≤ 1e-12.
+  - **Testing:** only silicon has been tested with phonons so far.
+- **Other QE programs** (`cp.x`, `neb.x`, `pp.x`, …) are not supported.
 - **`ATOMIC_POSITIONS crystal_sg`** is not supported by the structure viewer.
 
 See [qe_studio/README.md](qe_studio/README.md) for how the app works.

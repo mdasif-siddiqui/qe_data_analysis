@@ -109,3 +109,4 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
 body.public .local-only { display: none !important; }
 #public-note { margin-bottom: 16px; }
 @media (max-width: 760px) { .brand .sub { display: none; } .top { gap: 12px; padding: 10px 14px; } }
+select { font: inherit; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-1); color: var(--text-primary); }
