@@ -133,15 +133,17 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
 
 - **CIF → scf.in:** drop a `.cif` file (or paste one into the editor).
   - **Structure:** reduced to the primitive cell, with the space group detected (spglib). Positions are symmetrized,
-    so rounded CIF values such as `0.33333` become exactly 1/3.
+    so rounded CIF values such as `0.33333` become exactly 1/3. A setting suffix on the space-group symbol
+    (`F d -3 m :2` for origin choice 2, `R -3 m :R` for rhombohedral axes) is applied when the CIF lists no symmetry
+    operations.
   - **Pseudopotentials:** chosen and downloaded from the QE library, either **PBE** (ultrasoft/PAW, PSlibrary) or
     **LDA norm-conserving** (needed for Raman and UV-Vis). Cutoffs come from the pseudopotentials' own recommendations,
     except that norm-conserving B, C, N, O and F get at least 100 Ry (their files suggest too little).
   - **k-grid** from a target spacing (default 0.25 Å⁻¹), with fixed occupations or smearing.
   - **Editing:** the generated input appears in the editor to adjust, and **Save scf.in** downloads it.
-  - **Sanity checks:** warns when the built structure does not match the CIF's `_chemical_formula_sum` (usually
-    coordinates given for a different origin than the symmetry operations), when atoms overlap (< 0.7 Å), and when
-    sites are partially occupied (disorder).
+  - **Sanity checks:** warns when the built structure does not match the CIF's `_chemical_formula_sum` or its
+    `_cell_formula_units_Z` atom count (usually coordinates given for a different origin than the symmetry
+    operations), when atoms overlap (< 0.7 Å), and when sites are partially occupied (disorder).
 - **IR & Raman spectra** (tick **IR & Raman**): `ph.x` at Γ with the dielectric tensor and Born effective charges
   (`epsil`), Raman tensors (`lraman`), then `dynmat.x`.
   - **Shown:** ε∞, Born charges, TO and LO frequencies (LO–TO splitting), IR intensities (km/mol) and Raman activities
@@ -222,10 +224,37 @@ and a large LO–TO splitting.
 - **Bug found:** LO frequencies were paired with modes by list position, which put the E1(LO) on a silent B1 mode.
   They are now matched by frequency (GaAs unchanged).
 
+## Test: UV-Vis of diamond from a CIF
+
+[qe_studio/examples/C_diamond.cif](qe_studio/examples/C_diamond.cif) is a minimal CIF without symmetry operations,
+with C at (⅛, ⅛, ⅛) and the symbol `F d -3 m :2` (origin choice 2), as many database files are. It was converted with
+**LDA norm-conserving** (`C.pz-vbc.UPF`, 100 Ry) and **fixed occupations**, at the experimental lattice
+(a = 3.567 Å), then run with **UV-Vis** ticked: 16 bands on a 16×16×16 k-grid, 0.1 eV broadening. Each run takes
+about 3 minutes on 4 cores.
+
+| Quantity | No scissor | Scissor +1.7 eV | Measured |
+|---|---|---|---|
+| Band gap (LDA) | 4.09 eV indirect, 5.62 eV direct | — | 5.47 indirect, 7.3 direct |
+| Absorption onset (α = 10⁴ cm⁻¹) | 5.45 eV (227 nm) | 7.14 eV (174 nm) | ≈ 7.3 eV (direct edge) |
+| ε∞ | 6.47 | 5.02 | 5.7 |
+| n at 589 nm | 2.59 | 2.27 | 2.417 |
+| Main ε₂ peak (E2) | 11.8 eV | 13.5 eV | ≈ 12.2 eV |
+
+- **Reading the results:** without a scissor, ε∞ and n are 7–13% too high (the expected overestimate of this
+  approximation, see Limitations). The scissor (measured direct gap − LDA direct gap = 1.7 eV) puts the absorption
+  edge in the right place but makes ε∞ slightly too low and pushes the main peak too high. The measured values lie
+  between the two runs.
+- **f-sum rule 77%:** 16 bands are a little few for a spectrum up to 20 eV; more empty bands would raise it.
+- **Bug found:** ASE ignored the `:2` suffix, used origin choice 1, and built 16 C atoms instead of 8 (a wrong
+  4-atom "diamond", without any warning). The converter now applies the suffix, and a new check compares the atom
+  count with `_cell_formula_units_Z`, which also catches wrong settings for one-element crystals.
+- **Plot fix:** the absorption plot's wavelength range now follows the onset (diamond: 100–900 nm instead of a
+  fixed 150–1500 nm, where its UV absorption was a thin sliver).
+
 ## Limitations
 
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. α-quartz (NMR) and wurtzite AlN (IR & Raman) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
+  examples. α-quartz (NMR), wurtzite AlN (IR & Raman) and diamond (UV-Vis) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
   and for GaAs with `ibrav = 0`. Magnetic systems
   and other materials should work but are not yet tested; check the first results critically.
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
@@ -254,7 +283,7 @@ and a large LO–TO splitting.
 - **UV-Vis:**
   - **Approximation:** independent-particle, so no excitons and no local-field effects.
   - **Accuracy:** the nonlocal-pseudopotential commutator is left out, which overestimates ε by about 10–20% (silicon:
-    ε∞ = 16.2 vs about 14 in full LDA calculations, 11.7 measured).
+    ε∞ = 16.2 vs about 14 in full LDA calculations, 11.7 measured; diamond: 6.47 vs 5.7 measured).
   - **Band gaps:** LDA/GGA red-shift the absorption edge; use the scissor shift.
   - **Requirements:** norm-conserving pseudopotentials and QE's HDF5 wavefunctions (the conda-forge build has them).
   - **Why not epsilon.x:** QE's own `epsilon.x` is not used; in this build it gives k-grid-dependent spectra that are

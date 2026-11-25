@@ -686,10 +686,12 @@ function renderUV(R) {
     tile("f-sum rule", m.fsum_ratio ? `${(m.fsum_ratio * 100).toFixed(0)} <small>%</small>` : "–", `${m.nbnd} bands, ${m.grid ? m.grid.join("×") : ""} k-grid${m.shift_ev ? ` · scissor +${m.shift_ev} eV` : ""}`),
   ].join("");
   const E = uv.E, nm = E.map((e) => (e > 0 ? 1239.84198 / e : null));
-  const sel = nm.map((l, i) => l !== null && l >= 150 && l <= 1500 ? i : -1).filter((i) => i >= 0);
+  // range follows the material: wide-gap absorbers (diamond, onset ~230 nm) need the deep UV, small-gap ones the near IR
+  const lo = 100, hi = Math.min(2500, Math.max(900, 1.6 * (uv.onset_nm || 0)));
+  const sel = nm.map((l, i) => l !== null && l >= lo && l <= hi ? i : -1).filter((i) => i >= 0);
   Plotly.react($("#p-uv"), [{ x: sel.map((i) => nm[i]), y: sel.map((i) => uv.alpha[i]), mode: "lines", line: { color: css("--s1"), width: 2 },
     showlegend: false, hovertemplate: "%{x:.0f} nm<br>α = %{y:.3s} cm⁻¹<extra></extra>" }],
-    layout({ xaxis: axis({ title: "Wavelength (nm)", range: [150, 1500] }),
+    layout({ xaxis: axis({ title: "Wavelength (nm)", range: [lo, hi] }),
       yaxis: axis({ title: "Absorption coefficient α (cm⁻¹)", type: $("#uv-log").checked ? "log" : "linear", exponentformat: "power" }),
       shapes: [380, 750].map((x) => ({ type: "line", x0: x, x1: x, yref: "paper", y0: 0, y1: 1, line: { color: css("--grid"), width: 1, dash: "dot" } })),
       annotations: [{ x: 565, yref: "paper", y: 1, text: "visible", showarrow: false, yshift: 8, font: { size: 11, color: css("--text-secondary") } }] }), CONFIG);

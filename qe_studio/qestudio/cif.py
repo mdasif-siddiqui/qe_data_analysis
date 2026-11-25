@@ -75,6 +75,32 @@ def _formula_counts(text: str) -> dict:
     return {el: float(n) if n else 1.0 for el, n in re.findall(r"([A-Z][a-z]?)\s*([\d.]*)", text)}
 
 
+def _origin_setting(cif_text: str) -> tuple[str, str | None]:
+    """ASE only honours origin choice 2 / rhombohedral axes via _symmetry_space_group_setting, but most CIFs
+    write it as a suffix of the symbol ('F d -3 m :2', 'R -3 m :R'). Without symmetry operations in the file,
+    ASE then uses setting 1 and silently builds a wrong structure (diamond with C at 1/8: 16 atoms, not 8).
+    Returns the (possibly amended) CIF text and a note."""
+    if re.search(r"_(symmetry_equiv_pos|space_group_symop)_\w*xyz", cif_text, re.I):
+        return cif_text, None                      # explicit operations: the setting is in the operations
+    if re.search(r"_symmetry_space_group_setting", cif_text, re.I):
+        return cif_text, None
+    m = re.search(r"^\s*_(?:symmetry_space_group_name_H-M|space_group_name_H-M_alt)\s+['\"]?([^'\"\n]+)", cif_text,
+                  re.I | re.M)
+    if not m:
+        return cif_text, None
+    suf = re.search(r":\s*([12RH])\s*$", m.group(1).strip(), re.I)
+    if not suf:
+        return cif_text, None
+    setting = {"1": 1, "2": 2, "H": 1, "R": 2}[suf.group(1).upper()]
+    if setting == 1:
+        return cif_text, None
+    what = "rhombohedral axes" if suf.group(1).upper() == "R" else "origin choice 2"
+    eol = cif_text.find("\n", m.end())
+    eol = len(cif_text) if eol < 0 else eol
+    return (cif_text[:eol] + f"\n_symmetry_space_group_setting {setting}" + cif_text[eol:],
+            f"The space group symbol '{m.group(1).strip()}' asks for {what}; it was applied.")
+
+
 def _cif_checks(cif_text: str, atoms) -> list[str]:
     """Sanity checks on the structure built from the CIF (catches wrong symmetry/origin, overlaps, disorder)."""
     out: list[str] = []
@@ -109,6 +135,18 @@ def _cif_checks(cif_text: str, atoms) -> list[str]:
                                "the symmetry operations (origin choice). Check the CIF before running.")
             elif want:
                 out.append(f"The CIF formula ({fsum}) has different elements than the structure built from it.")
+            # atom count from Z (catches wrong settings also for one-element or ratio-preserving errors)
+            z = block.get("_cell_formula_units_z")
+            try:
+                z = float(str(z).split("(")[0]) if z is not None else None
+            except ValueError:
+                z = None
+            if z and want and set(want) == set(have) and not out:
+                expect = z * sum(want.values())
+                if abs(expect - len(atoms)) > 0.5:
+                    out.append(f"The CIF says Z = {z:g} formula units ({expect:g} atoms in the cell), but {len(atoms)} atoms "
+                               "were built: the coordinates probably do not match the symmetry setting (origin choice). "
+                               "Check the CIF before running.")
     if len(atoms) > 1:
         d = atoms.get_all_distances(mic=True)
         np.fill_diagonal(d, np.inf)
@@ -126,6 +164,9 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
     warnings: list[str] = []
     if functional not in CANDIDATES:
         raise ValueError(f"Unknown functional {functional!r}")
+    cif_text, note = _origin_setting(cif_text)
+    if note:
+        warnings.append(note)
     try:
         atoms = read(io.StringIO(cif_text), format="cif")
     except Exception as e:
@@ -185,6 +226,7 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
     hard = sorted(el for el in elements if el in ("B", "C", "N", "O", "F"))
     if nc_only and hard and ecutwfc < 100:
         ecutwfc = 100.0
+        ecw = ecw or [ecutwfc]          # the cutoff is now chosen, not a blind guess
         warnings.append(f"Norm-conserving pseudopotentials for {', '.join(hard)} need about 100 Ry; ecutwfc was raised to "
                         "100 Ry (the files suggest less, which is not converged). Run the cutoff convergence test to check.")
     ecutwfc = float(math.ceil(ecutwfc / 5) * 5)
