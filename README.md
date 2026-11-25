@@ -132,9 +132,11 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
     cells start with 2×2×2.
 
 - **CIF → scf.in:** drop a `.cif` file (or paste one into the editor).
-  - **Structure:** reduced to the primitive cell, with the space group detected (spglib).
+  - **Structure:** reduced to the primitive cell, with the space group detected (spglib). Positions are symmetrized,
+    so rounded CIF values such as `0.33333` become exactly 1/3.
   - **Pseudopotentials:** chosen and downloaded from the QE library, either **PBE** (ultrasoft/PAW, PSlibrary) or
-    **LDA norm-conserving** (needed for Raman and UV-Vis). Cutoffs come from the pseudopotentials' own recommendations.
+    **LDA norm-conserving** (needed for Raman and UV-Vis). Cutoffs come from the pseudopotentials' own recommendations,
+    except that norm-conserving B, C, N, O and F get at least 100 Ry (their files suggest too little).
   - **k-grid** from a target spacing (default 0.25 Å⁻¹), with fixed occupations or smearing.
   - **Editing:** the generated input appears in the editor to adjust, and **Save scf.in** downloads it.
   - **Sanity checks:** warns when the built structure does not match the CIF's `_chemical_formula_sum` (usually
@@ -145,7 +147,7 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
   - **Shown:** ε∞, Born charges, TO and LO frequencies (LO–TO splitting), IR intensities (km/mol) and Raman activities
     (Å⁴/amu) per mode, IR-/Raman-active/silent labels, and broadened spectra. Raman can be shown as intensities for a
     532 nm laser at 300 K.
-  - **Cost:** GaAs takes about 5 minutes.
+  - **Cost:** GaAs takes about 5 minutes; wurtzite AlN at 100 Ry about 30 minutes.
 - **UV-Vis absorption** (tick **UV-Vis**): an NSCF with many empty bands, then the dielectric function computed
   directly from QE's wavefunctions.
   - **Shown:** ε₁ and ε₂, the absorption coefficient against wavelength (UV and visible ranges), refractive index and
@@ -190,10 +192,40 @@ structure**, **DOS** and **NMR** ticked.
 - **Lesson from the test:** the first version of this CIF had coordinates for another origin than its symmetry
   operations, and ASE silently built a wrong Si₆O₆ cell. The converter now catches this with the composition check.
 
+## Test: IR & Raman of wurtzite AlN from a CIF
+
+[qe_studio/examples/AlN_wurtzite.cif](qe_studio/examples/AlN_wurtzite.cif) (P6₃mc, Schulz & Thiemann 1977) was
+converted with **LDA norm-conserving** pseudopotentials (`Al`/`N.pz-vbc.UPF`) and **fixed occupations**, then run
+with **IR & Raman** ticked. Wurtzite has every kind of mode at Γ: IR + Raman (A1, E1), Raman only (E2), silent (B1),
+and a large LO–TO splitting.
+
+- **Settings that matter:** the structure was first relaxed with `vc-relax` in LDA at 100 Ry (a = 3.037 Å, c = 4.848 Å,
+  u = 0.383; 2.4% below experiment), and the IR & Raman run used that structure at 100 Ry, k-grid 10×10×6.
+- **Run time:** about 40 minutes on 4 cores (ph.x with Raman tensors 27 min).
+
+| Mode | QE Studio (cm⁻¹) | Measured (cm⁻¹) | Label in the app |
+|---|---|---|---|
+| E2(low) | 251.9 | 248 | Raman |
+| B1(low) | 548.9 | — (silent) | silent |
+| A1(TO) | 604.4 | 611 | IR + Raman |
+| E2(high) | 657.1 | 657 | Raman |
+| E1(TO) | 670.1 | 671 | IR + Raman |
+| B1(high) | 739.6 | — (silent) | silent |
+| E1(LO), q along x | 924.5 | 912 | LO column |
+
+- **Other results:** Born charges Al +2.51 (⊥c) / +2.68 (∥c), N the opposite, summing to 0.001; ε∞ = 4.27 (⊥c) /
+  4.51 (∥c), against about 4.7 / 4.8 measured; LDA gap 4.96 eV direct (measured 6.1 eV).
+- **What went wrong first:** the converter used the 60 Ry suggested in `N.pz-vbc.UPF`, at the experimental lattice.
+  That run gave a pressure of −302 kbar and frequencies about 10% too low (A1(TO) 547, E2(high) 583 cm⁻¹). Between
+  60 and 80 Ry the energy still dropped by 82 mRy; 100 Ry is converged (1.5 mRy and 4 kbar more up to 120 Ry). The
+  converter now raises norm-conserving first-row elements to 100 Ry and reminds you to relax before IR/Raman.
+- **Bug found:** LO frequencies were paired with modes by list position, which put the E1(LO) on a silent B1 mode.
+  They are now matched by frequency (GaAs unchanged).
+
 ## Limitations
 
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. α-quartz was run end to end from a CIF (see above). Input reading was also checked for a hexagonal 2D slab
+  examples. α-quartz (NMR) and wurtzite AlN (IR & Raman) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
   and for GaAs with `ibrav = 0`. Magnetic systems
   and other materials should work but are not yet tested; check the first results critically.
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
@@ -215,7 +247,10 @@ structure**, **DOS** and **NMR** ticked.
   - **Insulators only** (`occupations = 'fixed'`).
   - **Raman** also needs LDA with norm-conserving pseudopotentials (a ph.x restriction); otherwise only IR is calculated.
   - **Spectra:** harmonic, at Γ only, with no two-phonon or anharmonic features.
-  - **Testing:** done with GaAs (TO 258 / LO 274 cm⁻¹ in LDA vs 268 / 292 measured).
+  - **Testing:** done with GaAs (TO 258 / LO 274 cm⁻¹ in LDA vs 268 / 292 measured) and wurtzite AlN from a CIF
+    (within 1–2% of measured, see above).
+  - **No automatic relaxation:** relax the structure yourself (`vc-relax`, same pseudopotentials and cutoff) and run
+    IR & Raman on the relaxed structure; at the experimental lattice frequencies can be off by 10%.
 - **UV-Vis:**
   - **Approximation:** independent-particle, so no excitons and no local-field effects.
   - **Accuracy:** the nonlocal-pseudopotential commutator is left out, which overestimates ε by about 10–20% (silicon:

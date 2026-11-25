@@ -1,0 +1,39 @@
+data_AlN_wurtzite
+_chemical_name_systematic         'Aluminium nitride'
+_chemical_formula_sum             'Al N'
+_journal_name_full                'Solid State Communications'
+_journal_year                     1977
+_journal_volume                   23
+_journal_page_first               815
+_publ_author_name                 'Schulz, H.; Thiemann, K. H.'
+_cell_length_a                    3.1106(3)
+_cell_length_b                    3.1106(3)
+_cell_length_c                    4.9795(5)
+_cell_angle_alpha                 90
+_cell_angle_beta                  90
+_cell_angle_gamma                 120
+_symmetry_space_group_name_H-M    'P 63 m c'
+_symmetry_Int_Tables_number       186
+loop_
+_symmetry_equiv_pos_as_xyz
+  'x, y, z'
+  '-y, x-y, z'
+  '-x+y, -x, z'
+  '-x, -y, z+1/2'
+  'y, -x+y, z+1/2'
+  'x-y, x, z+1/2'
+  '-y, -x, z'
+  '-x+y, y, z'
+  'x, x-y, z'
+  'y, x, z+1/2'
+  'x-y, -y, z+1/2'
+  '-x, -x+y, z+1/2'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+Al1 Al 0.33333 0.66667 0.0000    1.0
+N1  N  0.33333 0.66667 0.3821(2) 1.0

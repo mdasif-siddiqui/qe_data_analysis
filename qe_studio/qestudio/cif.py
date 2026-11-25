@@ -141,8 +141,10 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
         if ds is not None:
             info["spacegroup"] = f"{ds.international} (No. {ds.number})"
         if primitive:
+            # standardized primitive cell with idealized positions: rounded CIF values such as 0.33333
+            # would otherwise break the symmetry slightly (QE then finds fewer symmetry operations)
             lat, pos, nums = spglib.standardize_cell(cell, to_primitive=True, no_idealize=False, symprec=1e-3)
-            if len(nums) < len(atoms):
+            if len(nums) <= len(atoms):
                 atoms = Atoms(numbers=nums, cell=lat, scaled_positions=pos, pbc=True)
     except ImportError:
         warnings.append("spglib is not installed: the cell was not reduced and the space group is unknown.")
@@ -177,6 +179,14 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
                 ecw.append(80.0)
     nc_only = kinds <= {"NC", "SL"}
     ecutwfc = max(ecw) if ecw else (50.0 if nc_only else 45.0)
+    # The old norm-conserving files (pz-vbc, ...) understate their needs for hard first-row elements:
+    # AlN with N.pz-vbc ("suggested 60 Ry") still changes by 82 mRy/cell and 130 kbar from 60 to 80 Ry and
+    # needs about 100 Ry.
+    hard = sorted(el for el in elements if el in ("B", "C", "N", "O", "F"))
+    if nc_only and hard and ecutwfc < 100:
+        ecutwfc = 100.0
+        warnings.append(f"Norm-conserving pseudopotentials for {', '.join(hard)} need about 100 Ry; ecutwfc was raised to "
+                        "100 Ry (the files suggest less, which is not converged). Run the cutoff convergence test to check.")
     ecutwfc = float(math.ceil(ecutwfc / 5) * 5)
     ecutrho = max(ecr) if ecr else (4 * ecutwfc if nc_only else 8 * ecutwfc)
     ecutrho = float(max(math.ceil(ecutrho / 10) * 10, (4 if nc_only else 8) * ecutwfc))
@@ -209,6 +219,10 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
     lines += ["K_POINTS automatic", "  {} {} {} 0 0 0".format(*grid)]
     if occupations == "fixed":
         warnings.append("Fixed occupations: correct only for insulators and semiconductors. Use smearing for metals.")
+    if functional == "lda-nc":
+        warnings.append("For IR/Raman (and phonons) relax the structure first with the same pseudopotentials and cutoff "
+                        "(vc-relax): at the experimental lattice LDA gives a large pressure and frequencies that are "
+                        "several percent off.")
     if len(atoms) > 40:
         warnings.append(f"{len(atoms)} atoms: this will be slow on a laptop.")
     return {"text": "\n".join(lines) + "\n", "info": info, "warnings": warnings, "name": f"{prefix}.scf.in"}

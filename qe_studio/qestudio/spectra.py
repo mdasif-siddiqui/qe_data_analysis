@@ -73,6 +73,29 @@ def parse_dynmat(text: str) -> list[dict]:
     return modes
 
 
+def _match_lo(modes: list[dict], lo: list[float], tol: float = 0.5):
+    """Attach the LO frequency (q along x) to each TO mode.
+
+    The LO calculation lists frequencies in its own sorted order, so pairing by index is wrong whenever an
+    LO mode moves past other modes (wurtzite: E1(LO) 850 lies above the silent B1 672). Frequencies that
+    appear in both lists are unchanged modes; the remaining LO frequencies belong to the remaining
+    IR-active TO modes, matched in increasing order."""
+    free_to = list(range(len(modes)))
+    new_lo = []
+    for f in sorted(lo):
+        j = next((i for i in free_to if abs(modes[i]["freq_cm1"] - f) < tol), None)
+        if j is None:
+            new_lo.append(f)
+        else:
+            modes[j]["freq_lo_cm1"] = modes[j]["freq_cm1"]
+            free_to.remove(j)
+    left = sorted(free_to, key=lambda i: ((modes[i].get("ir") or 0) <= 1e-4, modes[i]["freq_cm1"]))  # IR-active first
+    for i, f in zip(sorted(left[:len(new_lo)], key=lambda i: modes[i]["freq_cm1"]), new_lo):
+        modes[i]["freq_lo_cm1"] = f
+    for i in left[len(new_lo):]:
+        modes[i]["freq_lo_cm1"] = modes[i]["freq_cm1"]
+
+
 def analyse(d: Path, prefix: str) -> dict | None:
     sd = d / "spectra"
     if not (sd / "ph.out").exists():
@@ -84,15 +107,16 @@ def analyse(d: Path, prefix: str) -> dict | None:
         res["modes"] = parse_dynmat((sd / "dynmat.out").read_text(errors="replace"))
     if (sd / "dynmat_lo.out").exists() and res.get("modes"):
         lo = parse_dynmat((sd / "dynmat_lo.out").read_text(errors="replace"))
-        for m, l in zip(res["modes"], lo):
-            m["freq_lo_cm1"] = l["freq_cm1"]
+        _match_lo(res["modes"], [l["freq_cm1"] for l in lo])
     modes = [m for m in res.get("modes", []) if m["freq_cm1"] > 10]
     if modes:
         irmax = max((m["ir"] or 0) for m in modes) or 1
         rmax = max((m.get("raman") or 0) for m in modes) or 1
         for m in modes:
-            m["ir_active"] = (m["ir"] or 0) > 1e-3 * irmax and (m["ir"] or 0) > 1e-4
-            m["raman_active"] = (m.get("raman") or 0) > 1e-3 * rmax and (m.get("raman") or 0) > 1e-4
+            # symmetry-forbidden modes come out as exactly 0 or ~1e-6; weak allowed ones (e.g. E2(low) of
+            # wurtzite) can be ~1e-3 of the strongest, so the relative threshold must be low
+            m["ir_active"] = (m["ir"] or 0) > 1e-4 * irmax and (m["ir"] or 0) > 1e-4
+            m["raman_active"] = (m.get("raman") or 0) > 1e-4 * rmax and (m.get("raman") or 0) > 1e-4
         lo_split = [m["freq_lo_cm1"] - m["freq_cm1"] for m in modes if m.get("freq_lo_cm1") is not None]
         res["max_lo_to_cm1"] = max(lo_split) if lo_split else None
     return res
