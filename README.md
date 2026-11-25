@@ -42,7 +42,17 @@ Without Git, use **Code → Download ZIP** on GitHub and unzip it.
 
 **4. Test it.** Click **Load silicon example**, then **Run calculation**. You should get a band gap of about 0.50 eV (indirect).
 
-**5. Optional, only for NMR:** in Ubuntu, run once:
+**5. NMR (automatic):** NMR needs QE-GIPAW, which is compiled from source. There is nothing to do by hand: the
+first time you run a calculation with **NMR** ticked, QE Studio builds it automatically as an extra step
+("one-time GIPAW build"), then continues with the NMR calculation.
+
+- **Time:** 30–60 minutes, once per PC; later NMR runs start straight away.
+- **Needs:** internet (compilers and source code are downloaded) and about 2.2 GB of disk space. No admin rights.
+- **Progress:** the step shows the build messages live; the full logs are in `~/gipaw/*.log`.
+- **Skipped when it can't be used:** the build does not start if the input cannot do NMR anyway (smearing instead of
+  fixed occupations, or pseudopotentials without GIPAW data).
+
+To build it in advance instead (e.g. before going offline), run once in Ubuntu:
 
 ```bash
 bash /mnt/c/Users/<your-name>/qe_data_analysis/qe_studio/build_gipaw.sh
@@ -95,7 +105,7 @@ Start with `git pull` (or download the ZIP again): the start scripts fix several
 | `$'\r': command not found` | The `.sh` files got Windows line endings (copied or edited in Windows). `Start QE Studio.bat` now fixes this on every start. By hand: `sed -i 's/\r$//' qe_studio/*.sh` in Ubuntu. |
 | `ERROR: curl is missing` | In Ubuntu, run `sudo apt update && sudo apt install -y curl`, then start again. |
 | `Setup failed` | Usually no internet during the first start. Check the connection and start again; setup continues where it stopped. |
-| NMR option greyed out | GIPAW isn't built on this PC: run `build_gipaw.sh` once in Ubuntu (installation step 5), then restart QE Studio. If it fails, read `~/gipaw/*.log`. |
+| "One-time GIPAW build" step failed | Usually no internet during the build. Check the connection and run the NMR calculation again; the build continues where it stopped. Details: `nmr/gipaw_build.out` in the run folder and `~/gipaw/*.log`. |
 | Browser says it can't connect | Wait 2–3 seconds and refresh. If it persists, read the messages in the console window. |
 | `Address already in use` | QE Studio is already running in another window; use that one or close it first. |
 
@@ -143,7 +153,7 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
   - **Scissor shift:** optional, corrects the too-small LDA/GGA gap.
   - **Quality check:** the f-sum rule is reported as a measure of whether enough empty bands were included.
 
-- **NMR shielding** (tick **NMR**; needs the one-time GIPAW build, installation step 5): `pw.x` and `gipaw.x`.
+- **NMR shielding** (tick **NMR**; the first NMR run builds GIPAW automatically, installation step 5): `pw.x` and `gipaw.x`.
   - **Shown:** isotropic shielding σ, anisotropy, asymmetry η and principal components for every atom, and a simulated
     spectrum per nucleus.
   - **Chemical shifts** use δ = σ_ref − σ. Set σ_ref per element directly, or take it from a reference run plus its

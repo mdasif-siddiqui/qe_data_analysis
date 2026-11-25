@@ -223,6 +223,7 @@ def job_detail(jid):
              "ph_scf": "phonon/scf.out", "ph": "phonon/ph.out", "q2r": "phonon/q2r.out", "matdyn": "phonon/matdyn_dos.out",
              "sp_scf": "spectra/scf.out", "sp_ph": "spectra/ph.out", "dynmat": "spectra/dynmat.out",
              "uv_nscf": "uvvis/nscf.out", "nmr_scf": "nmr/scf.out", "nmr": "nmr/gipaw.out",
+             "gipaw_build": "nmr/gipaw_build.out",
              "bandsx": "bands_pp.out"}
     if st.get("status") == "running" and cur in names and (job.dir / names[cur]).exists():
         st["live"] = "\n".join((job.dir / names[cur]).read_text(errors="replace").splitlines()[-25:])

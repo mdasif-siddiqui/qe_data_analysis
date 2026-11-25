@@ -228,9 +228,13 @@ async function loadStatus() {
     $("#np-hint").textContent = `${SYS.physical_cores} physical cores`;
     $("#runs-dir").textContent = SYS.public ? "Runs started from this browser" : SYS.runs_dir;
     applyPublicMode();
-    if (!SYS.gipaw) {
+    if (!SYS.gipaw && SYS.public) {
       $("#o-nmr").disabled = true; $("#o-nmr").checked = false;
-      $("#nmr-hint").innerHTML = "GIPAW is not installed on this computer. Run <code>build_gipaw.sh</code> once in Ubuntu (README, installation step 5; 30–60 minutes), then restart QE Studio.";
+      $("#nmr-hint").textContent = "NMR is not available on this server.";
+    } else if (!SYS.gipaw) {
+      $("#nmr-hint").innerHTML = "Shielding tensors and chemical shifts for every atom. Insulators only (occupations = 'fixed') with " +
+        "GIPAW-ready pseudopotentials (CIF converter: \"PBE PAW\"). <b>GIPAW is not installed yet:</b> the first NMR run builds it " +
+        "automatically (once, 30–60 minutes, needs internet).";
     }
   } catch (e) { $("#sys").textContent = "server not reachable"; }
 }

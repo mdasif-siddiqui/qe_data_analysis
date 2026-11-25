@@ -15,5 +15,5 @@ if errorlevel 1 (
 
 start "" http://localhost:8050
 rem Remove Windows line endings from the scripts (they break bash), then start
-wsl -e bash -c "d=\"$(wslpath '%~dp0')\"; sed -i 's/\r$//' \"$d/start.sh\" \"$d/setup_wsl.sh\"; bash \"$d/start.sh\""
+wsl -e bash -c "d=\"$(wslpath '%~dp0')\"; sed -i 's/\r$//' \"$d/start.sh\" \"$d/setup_wsl.sh\" \"$d/build_gipaw.sh\"; bash \"$d/start.sh\""
 pause

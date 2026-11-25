@@ -9,6 +9,12 @@ MF="$HOME/miniforge3"
 ROOT="$HOME/gipaw"
 SRC="$ROOT/src"
 mkdir -p "$SRC" "$ROOT/bin"
+# one build at a time (QE Studio may start it automatically for the first NMR run)
+exec 9> "$ROOT/.build.lock"
+if ! flock -n 9; then
+  echo ">>> Another GIPAW build is already running; waiting for it to finish"
+  flock 9
+fi
 
 if ! "$MF/bin/conda" env list | grep -q '^qebuild '; then
   echo ">>> Creating build env 'qebuild' (compilers, MPI, FFTW, OpenBLAS)"

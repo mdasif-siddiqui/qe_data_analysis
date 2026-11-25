@@ -308,6 +308,8 @@ def create_job(scf_text: str, scf_name: str, pseudo_files: dict[str, bytes], opt
         steps += [{"name": "uv_nscf", "label": "UV-Vis: SCF + NSCF with empty bands (pw.x)"},
                   {"name": "optics", "label": "UV-Vis: dielectric function and absorption"}]
     if options.get("nmr"):
+        if not nmr.available() and not config.PUBLIC:
+            steps += [{"name": "gipaw_build", "label": "NMR: one-time GIPAW build (30-60 min, first NMR run only)"}]
         steps += [{"name": "nmr_scf", "label": "NMR: SCF (pw.x, GIPAW build)"},
                   {"name": "nmr", "label": "NMR shielding tensors (gipaw.x)"}]
     if options.get("conv"):
@@ -594,8 +596,10 @@ def run_pipeline(mgr: Manager, job: Job):
         try:
             run_nmr(mgr, job, base_calc_text, prefix, np_)
         except Exception as e:
+            if job.cancelled:
+                raise
             job.log(f"NMR stopped: {e}")
-            for s_ in ("nmr_scf", "nmr"):
+            for s_ in ("gipaw_build", "nmr_scf", "nmr"):
                 cur = next((x for x in job.load()["steps"] if x["name"] == s_), {})
                 if cur.get("status") in ("pending", "running"):
                     job.step(s_, status="skipped" if cur.get("status") == "pending" else "failed",
@@ -872,19 +876,38 @@ def analyse_uvvis(d: Path) -> dict | None:
 
 
 # --------------------------------------------------------------------------- NMR
+def build_gipaw(job: Job, out: Path):
+    """Run build_gipaw.sh (compilers, QE source, pw.x + gipaw.x into ~/gipaw/bin). Cancel stops it."""
+    script = Path(__file__).resolve().parent.parent / "build_gipaw.sh"
+    job.log(f"GIPAW is not installed yet: building it once ($ bash {script} > {out.name})")
+    with open(out, "w") as fo:
+        code = script.read_text().replace("\r\n", "\n")       # a Windows checkout may have CRLF endings
+        job.proc = subprocess.Popen(["bash", "-c", code, str(script)], stdout=fo, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, start_new_session=True)
+        rc = job.proc.wait()
+    if job.cancelled:
+        raise RuntimeError("Cancelled by user")
+    if rc != 0 or not nmr.available():
+        tail = out.read_text(errors="replace").strip().splitlines()[-3:]
+        job.step("gipaw_build", status="failed", error="GIPAW build failed: " + " | ".join(tail))
+        job.log("GIPAW build failed: " + " | ".join(tail))
+
+
 def run_nmr(mgr: Manager, job: Job, text: str, prefix: str, np_: int):
     """SCF and gipaw.x (job = 'nmr') with the self-built QE-GIPAW, in runs/<id>/nmr/."""
     nd = job.dir / "nmr"
     nd.mkdir(exist_ok=True)
 
+    has_build_step = any(s.get("name") == "gipaw_build" for s in job.load().get("steps", []))
+
     def skip(msg):
-        for s_ in ("nmr_scf", "nmr"):
-            job.step(s_, status="skipped", error=msg)
+        done = {s["name"] for s in job.load().get("steps", []) if s.get("status") in ("done", "failed")}
+        for s_ in ("gipaw_build", "nmr_scf", "nmr"):
+            if s_ not in done:
+                job.step(s_, status="skipped", error=msg)
         (nd / "skipped.txt").write_text(msg)
 
-    if not nmr.available():
-        return skip("GIPAW is not installed on this computer. Run build_gipaw.sh once in Ubuntu "
-                    "(README, installation step 5; about 30-60 minutes, no admin rights needed), then rerun.")
+    # cheap checks first, so a 30-60 minute build is never started for a run that cannot use it
     occ = str(qein.get(qein.parse_input(text), "system", "occupations", "fixed")).lower()
     if occ != "fixed":
         return skip("NMR shielding (GIPAW job 'nmr') needs an insulator with occupations = 'fixed'.")
@@ -893,6 +916,15 @@ def run_nmr(mgr: Manager, job: Job, text: str, prefix: str, np_: int):
     if bad:
         return skip("These pseudopotentials have no usable GIPAW data: " + "; ".join(bad) +
                     ". Use PSlibrary PAW files (CIF converter: 'PBE PAW, for NMR').")
+    if not nmr.available():
+        if config.PUBLIC or not has_build_step:
+            return skip("GIPAW is not installed on this computer. Run build_gipaw.sh once in Ubuntu "
+                        "(README, installation step 5; about 30-60 minutes, no admin rights needed), then rerun.")
+        _timed(job, "gipaw_build", lambda: build_gipaw(job, nd / "gipaw_build.out"))
+        if not nmr.available():
+            return skip("The automatic GIPAW build did not finish; see nmr/gipaw_build.out and ~/gipaw/*.log.")
+    elif has_build_step:
+        job.step("gipaw_build", status="done", seconds=0)   # built meanwhile (e.g. by an earlier job)
     scratch = job.scratch / "nmr"
     scratch.mkdir(parents=True, exist_ok=True)
     outdir = str(scratch) + "/"
