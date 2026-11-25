@@ -127,6 +127,9 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
     **LDA norm-conserving** (needed for Raman and UV-Vis). Cutoffs come from the pseudopotentials' own recommendations.
   - **k-grid** from a target spacing (default 0.25 Å⁻¹), with fixed occupations or smearing.
   - **Editing:** the generated input appears in the editor to adjust, and **Save scf.in** downloads it.
+  - **Sanity checks:** warns when the built structure does not match the CIF's `_chemical_formula_sum` (usually
+    coordinates given for a different origin than the symmetry operations), when atoms overlap (< 0.7 Å), and when
+    sites are partially occupied (disorder).
 - **IR & Raman spectra** (tick **IR & Raman**): `ph.x` at Γ with the dielectric tensor and Born effective charges
   (`epsil`), Raman tensors (`lraman`), then `dynmat.x`.
   - **Shown:** ε∞, Born charges, TO and LO frequencies (LO–TO splitting), IR intensities (km/mol) and Raman activities
@@ -151,10 +154,37 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
 The **Analyse outputs** tab reads existing pw.x, ph.x, dos.x and projwfc.x outputs, matdyn.x `.freq` files
 (dispersion) and phonon DOS files (DOS plus thermodynamics) of any material.
 
+## Test: α-quartz from a CIF
+
+[qe_studio/examples/SiO2_alpha-quartz.cif](qe_studio/examples/SiO2_alpha-quartz.cif) is a database-style CIF
+(P3₂21, Levien et al. 1980). It was converted with **PBE PAW** and **fixed occupations**, then run with **Band
+structure**, **DOS** and **NMR** ticked.
+
+- **Conversion:** 9 atoms (Si₃O₆), space group P3₂21 (No. 154), `O`/`Si.pbe-n-kjpaw_psl.1.0.0.UPF` downloaded
+  automatically, cutoffs 50 / 400 Ry, k-grid 6×6×5. The band path is the hexagonal one (Γ–M–K–Γ–A–L–H–A|L–M|K–H).
+- **Run time:** about 1.8 hours on 4 cores (SCF 7 min, bands 29 min, NSCF 20 min, NMR 49 min).
+
+| Quantity | QE Studio | Reference |
+|---|---|---|
+| Band gap | 6.01 eV, indirect (VBM at K, CBM at Γ); direct 6.31 eV | Usual PBE result ≈ 5.7–6 eV; measured ≈ 9 eV (PBE underestimates gaps) |
+| ²⁹Si shielding σ | 436.5 ppm (all 3 Si identical) | In line with published GIPAW results for quartz |
+| ¹⁷O shielding σ | 217.4 ppm (all 6 O identical); anisotropy 52 ppm, η 0.11 | — |
+| GIPAW f-sum rule | −46.2532 | −46.2534 expected ✓ |
+| Löwdin charges | Si +1.84, O −0.81 | Partly ionic Si–O bond |
+| Warnings | force 0.04 Ry/bohr, pressure 79 kbar | Expected: experimental structure, not relaxed with PBE |
+
+- **²⁹Si chemical shift:** with the 3C-SiC run as reference (σ = 363.88, measured δ = −18.3 ppm), quartz comes out at
+  δ ≈ −91 ppm vs −107.4 measured. A reference with very different bonding (Si–C vs Si–O), and computed at other
+  cutoffs, is a poor reference. The usual choice is quartz itself: σ_ref = 436.48 − 107.4 = **329.1 ppm** for other
+  silicates computed with the same settings.
+- **Lesson from the test:** the first version of this CIF had coordinates for another origin than its symmetry
+  operations, and ASE silently built a wrong Si₆O₆ cell. The converter now catches this with the composition check.
+
 ## Limitations
 
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. Input reading was also checked for a hexagonal 2D slab and for GaAs with `ibrav = 0`. Magnetic systems
+  examples. α-quartz was run end to end from a CIF (see above). Input reading was also checked for a hexagonal 2D slab
+  and for GaAs with `ibrav = 0`. Magnetic systems
   and other materials should work but are not yet tested; check the first results critically.
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
   that E_F moves by +130 meV on the denser NSCF grid and that the convergence tests did not converge.
@@ -190,7 +220,8 @@ The **Analyse outputs** tab reads existing pw.x, ph.x, dos.x and projwfc.x outpu
     GIPAW sections with zero radii that `gipaw.x` rejects, and norm-conserving `pz-vbc`/`bhs` files have none; the app
     checks this and explains.
   - **Accuracy:** chemical shifts are only as good as the reference. Use a reference computed with the same
-    pseudopotentials, cutoff and k-grid. Tested: 3C-SiC ¹³C δ = 20.2 ppm with diamond as reference, vs 18.4 measured.
+    pseudopotentials, cutoff and k-grid. Tested: 3C-SiC ¹³C δ = 20.2 ppm with diamond as reference, vs 18.4 measured;
+    α-quartz ²⁹Si σ = 436.5 ppm (but δ ≈ −91 vs −107.4 ppm when SiC is used as the reference).
   - **Build patches:** `build_gipaw.sh` fixes three malformed Fortran format strings in QE-GIPAW 7.6 that make recent
     gfortran stop at the end of a run.
 - **Other QE programs** (`cp.x`, `neb.x`, `pp.x`, …) are not supported.
