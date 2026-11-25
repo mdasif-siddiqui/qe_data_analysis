@@ -116,6 +116,12 @@ If a message isn't listed here, copy the full text from the console window.
 QE Studio works with any pw.x `scf.in`, not just the silicon example:
 
 - **Any crystal structure:** every `ibrav`, `celldm` or `A, B, C`, or your own `CELL_PARAMETERS`.
+- **Relaxation first** (option **relax first** under SCF: `relax` for atom positions, `vc-relax` for positions and
+  cell): a `pw.x` relaxation runs before everything else, with thresholds tight enough for phonons (forces
+  < 10⁻⁴ Ry/bohr, pressure < 0.5 kbar). Its final structure is written into the run's `scf.in` (`ibrav = 0`, cell in Å,
+  crystal positions; fixed-atom flags kept), and SCF, bands, DOS, phonons, IR & Raman, UV-Vis and NMR all use it.
+  The run page reports how the cell, forces and pressure changed. An input that is itself `calculation = 'relax'` or
+  `'vc-relax'` is handled the same way. Recommended for phonons and IR & Raman; the app reminds you when they are ticked.
 - **Any elements:** pseudopotentials named in `ATOMIC_SPECIES` are downloaded from the official QE library when they exist
   there; otherwise upload your own `.UPF` files together with the input (SSSP, PSlibrary, …).
 - **Semiconductors and insulators:** band gap, direct or indirect, with the VBM/CBM positions.
@@ -205,6 +211,8 @@ and a large LO–TO splitting.
 
 - **Settings that matter:** the structure was first relaxed with `vc-relax` in LDA at 100 Ry (a = 3.037 Å, c = 4.848 Å,
   u = 0.383; 2.4% below experiment), and the IR & Raman run used that structure at 100 Ry, k-grid 10×10×6.
+  This is now automatic: converting the CIF and ticking **relax first: vc-relax** + **IR & Raman** gives the same cell
+  (3.03698 / 4.84823 Å, pressure −136 → −2.4 kbar in 7 SCF cycles, 2 minutes) and the same frequencies to 0.1 cm⁻¹.
 - **Run time:** about 40 minutes on 4 cores (ph.x with Raman tensors 27 min).
 
 | Mode | QE Studio (cm⁻¹) | Measured (cm⁻¹) | Label in the app |
@@ -256,7 +264,8 @@ about 3 minutes on 4 cores.
 ## Test: phonons of diamond from a CIF
 
 The same [diamond CIF](qe_studio/examples/C_diamond.cif) (LDA norm-conserving, 100 Ry, k-grid 13×13×13) was first
-relaxed by hand with `vc-relax` (a = 3.524 Å, 1.2% below the measured 3.567 Å, typical for LDA), then run with
+relaxed with `vc-relax` (a = 3.524 Å, 1.2% below the measured 3.567 Å, typical for LDA; now done by the **relax
+first** option), then run with
 **Phonons** ticked and the default 4×4×4 q-grid. Diamond is non-polar, so the missing LO–TO splitting in the
 dispersion does not matter. Run time: about 35 minutes on 4 cores (ph.x 31 min for 8 q-points).
 
@@ -292,8 +301,8 @@ dispersion does not matter. Run time: about 35 minutes on 4 cores (ph.x 31 min f
   that E_F moves by +130 meV on the denser NSCF grid and that the convergence tests did not converge.
 - **2D materials / slabs:** the automatic k-path includes points along the vacuum direction. Enter the in-plane
   path yourself, e.g. `GMKG` for a hexagonal layer.
-- **relax / vc-relax inputs:** they run, but the band structure and DOS inputs use the structure from your input file,
-  not the relaxed one. For bands of the relaxed structure, put the final coordinates into a new scf input.
+- **Relaxation:** the relaxed structure is used as it is; there is no symmetry re-detection or re-standardization
+  afterwards. A relaxation that does not converge within 100 steps is reported, and its last structure is used.
 - **Spin-orbit / non-collinear** (`noncolin`, `lspinorb`): basic support only, the least tested part.
 - **Large systems:** on a 4-core laptop, more than about 20–30 atoms or high cutoffs take from many minutes to hours.
 - **Phonons:**
@@ -302,8 +311,8 @@ dispersion does not matter. Run time: about 35 minutes on 4 cores (ph.x 31 min f
     at Γ. No anharmonic effects or thermal expansion.
   - **Inputs:** phonons need a relaxed structure (zero forces) and tight convergence; the app runs its own SCF with
     `conv_thr` ≤ 1e-12.
-  - **No automatic relaxation:** relax the structure yourself (`vc-relax`, same pseudopotentials and cutoff) and run
-    phonons on the relaxed structure.
+  - **Relax first:** choose **relax first: vc-relax** (or give an input that is already relaxed with the same
+    pseudopotentials and cutoff).
   - **Testing:** silicon and diamond (from a CIF, see above).
 - **IR & Raman:**
   - **Insulators only** (`occupations = 'fixed'`).
@@ -311,8 +320,7 @@ dispersion does not matter. Run time: about 35 minutes on 4 cores (ph.x 31 min f
   - **Spectra:** harmonic, at Γ only, with no two-phonon or anharmonic features.
   - **Testing:** done with GaAs (TO 258 / LO 274 cm⁻¹ in LDA vs 268 / 292 measured) and wurtzite AlN from a CIF
     (within 1–2% of measured, see above).
-  - **No automatic relaxation:** relax the structure yourself (`vc-relax`, same pseudopotentials and cutoff) and run
-    IR & Raman on the relaxed structure; at the experimental lattice frequencies can be off by 10%.
+  - **Relax first:** choose **relax first: vc-relax**; at the experimental lattice frequencies can be off by 10%.
 - **UV-Vis:**
   - **Approximation:** independent-particle, so no excitons and no local-field effects.
   - **Accuracy:** the nonlocal-pseudopotential commutator is left out, which overestimates ε by about 10–20% (silicon:

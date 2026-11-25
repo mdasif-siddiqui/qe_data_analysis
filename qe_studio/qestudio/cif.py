@@ -262,9 +262,8 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
     if occupations == "fixed":
         warnings.append("Fixed occupations: correct only for insulators and semiconductors. Use smearing for metals.")
     if functional == "lda-nc":
-        warnings.append("For IR/Raman (and phonons) relax the structure first with the same pseudopotentials and cutoff "
-                        "(vc-relax): at the experimental lattice LDA gives a large pressure and frequencies that are "
-                        "several percent off.")
+        warnings.append("For IR/Raman (and phonons) choose 'relax first: vc-relax' under SCF: at the experimental "
+                        "lattice LDA gives a large pressure and frequencies that are several percent off.")
     if len(atoms) > 40:
         warnings.append(f"{len(atoms)} atoms: this will be slow on a laptop.")
     return {"text": "\n".join(lines) + "\n", "info": info, "warnings": warnings, "name": f"{prefix}.scf.in"}

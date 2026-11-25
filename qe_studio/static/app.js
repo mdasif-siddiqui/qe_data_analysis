@@ -363,6 +363,7 @@ async function runInspect() {
   if (!r.errors?.length) msgs.unshift(["ok", "✓", "Input looks valid for pw.x."]);
   $("#msgs").innerHTML = msgs.map(([c, ic, m]) => `<div class="msg ${c}"><span class="ic">${ic}</span><span>${esc(m)}</span></div>`).join("");
   const s = r.structure || {};
+  if (r.calculation === "relax" || r.calculation === "vc-relax") { $("#o-relax").value = r.calculation; relaxHint(); }
   const kv = [
     ["Formula", s.formula ? `${s.formula} (${s.natoms} atoms)` : "–"],
     ["Lattice", s.lattice || "–"],
@@ -386,6 +387,16 @@ async function runInspect() {
   $("#run").disabled = !!r.errors?.length;
 }
 
+// phonons and IR/Raman need a relaxed structure: point it out when they are ticked without "relax first"
+function relaxHint() {
+  const need = ($("#o-ph").checked || $("#o-sp").checked) && !$("#o-relax").value;
+  $("#relax-hint").classList.toggle("warn-text", need);
+  $("#relax-hint").textContent = need
+    ? "Phonons and IR & Raman need a relaxed structure (zero forces, zero pressure). Choose vc-relax unless your input is already relaxed with the same pseudopotentials and cutoff."
+    : "Everything after it (bands, DOS, phonons, IR/Raman, UV-Vis, NMR) then uses the relaxed structure. Recommended for phonons and IR & Raman.";
+}
+["#o-ph", "#o-sp", "#o-relax"].forEach((s) => $(s).addEventListener("change", relaxHint));
+
 $("#run").addEventListener("click", async () => {
   const opts = {
     bands: $("#o-bands").checked, dos: $("#o-dos").checked, conv: $("#o-conv").checked,
@@ -394,7 +405,7 @@ $("#run").addEventListener("click", async () => {
     ecut_list: $("#o-ecut").value.trim(), k_list: $("#o-klist").value.trim(), conv_thr_mev: Number($("#o-thr").value) || 1,
     np: Number($("#o-np").value) || SYS.physical_cores, download_pseudos: $("#o-dl").checked,
     phonons: $("#o-ph").checked, spectra: $("#o-sp").checked,
-    nmr: $("#o-nmr").checked,
+    nmr: $("#o-nmr").checked, relax: $("#o-relax").value,
     uvvis: $("#o-uv").checked, uv_scissor: Number($("#o-uvshift").value) || 0, uv_sigma: Number($("#o-uvsig").value) || 0.1,
     ph_qgrid: $("#o-qgrid").value.trim() ? $("#o-qgrid").value.trim().split(/[\s,x×]+/).map(Number) : null,
   };

@@ -73,6 +73,13 @@
       <div class="opt">
         <label class="chk"><input type="checkbox" id="o-scf" checked disabled> SCF</label>
         <div class="muted small">Always runs first. Total energy, Fermi level / HOMO-LUMO, forces, stress.</div>
+        <div class="field"><span>relax first</span><select id="o-relax">
+          <option value="">no (use the structure as given)</option>
+          <option value="relax">relax (atom positions)</option>
+          <option value="vc-relax">vc-relax (positions + cell)</option>
+        </select></div>
+        <div class="muted small" id="relax-hint">Everything after it (bands, DOS, phonons, IR/Raman, UV-Vis, NMR) then uses the
+          relaxed structure. Recommended for phonons and IR &amp; Raman.</div>
       </div>
       <div class="opt">
         <label class="chk"><input type="checkbox" id="o-bands" checked> Band structure</label>

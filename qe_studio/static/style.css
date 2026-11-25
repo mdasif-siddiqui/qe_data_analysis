@@ -1,4 +1,5 @@
 [hidden] { display: none !important; }
+.warn-text, .muted.warn-text { color: var(--critical); }
 :root {
   color-scheme: light;
   --page: #f9f9f7; --surface-1: #fcfcfb; --card: #ffffff;

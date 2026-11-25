@@ -286,8 +286,11 @@ def create_job(scf_text: str, scf_name: str, pseudo_files: dict[str, bytes], opt
     pdir.mkdir()
     for name, data in pseudo_files.items():
         (pdir / pseudos.safe_name(name)).write_bytes(data)
-    steps = [{"name": "prepare", "label": "Prepare inputs & pseudopotentials"},
-             {"name": "scf", "label": "SCF (pw.x)"}]
+    steps = [{"name": "prepare", "label": "Prepare inputs & pseudopotentials"}]
+    rmode = relax_mode(fixed, options)
+    if rmode:
+        steps += [{"name": "relax", "label": f"Structure relaxation (pw.x {rmode})"}]
+    steps += [{"name": "scf", "label": "SCF (pw.x)" + (" on the relaxed structure" if rmode else "")}]
     if options.get("bands", True):
         steps += [{"name": "bands", "label": "Band structure (pw.x bands)"},
                   {"name": "bandsx", "label": "bands.x post-processing"}]
@@ -319,7 +322,7 @@ def create_job(scf_text: str, scf_name: str, pseudo_files: dict[str, bytes], opt
     for s in steps:
         s["status"] = "pending"
     job.save({"id": jid, "prefix": prefix, "input_name": scf_name, "status": "queued",
-              "created": time.time(), "options": options, "steps": steps, "notes": notes})
+              "created": time.time(), "options": options, "steps": steps, "notes": notes, "relax_mode": rmode})
     (job.dir / "scf.in").write_text(fixed)
     job.log(f"Job created from {scf_name}. " + " ".join(notes))
     mgr.submit(job)
@@ -370,6 +373,87 @@ def cleanup_old_runs():
         if (st.get("created") or d.stat().st_mtime) < cutoff:
             shutil.rmtree(d, ignore_errors=True)
             shutil.rmtree(SCRATCH / d.name, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- relaxation
+RELAX_MODES = ("relax", "vc-relax")
+
+
+def relax_mode(text: str, opts: dict) -> str | None:
+    """'relax' / 'vc-relax' when the user asked for it or the input itself is a relaxation, else None."""
+    mode = str(opts.get("relax") or "").lower()
+    if mode in RELAX_MODES:
+        return mode
+    calc = str(qein.get(qein.parse_input(text), "control", "calculation", "scf")).lower()
+    return calc if calc in RELAX_MODES else None
+
+
+def relax_input(text: str, mode: str, outdir: str) -> str:
+    """pw.x relax/vc-relax input with thresholds tight enough for phonons (forces 1e-4 Ry/bohr, 0.5 kbar)."""
+    parsed = qein.parse_input(text)
+    t = qein.set_param(text, "control", "calculation", mode)
+    t = qein.set_param(t, "control", "outdir", outdir)
+    t = qein.set_param(t, "control", "tprnfor", True)
+    t = qein.set_param(t, "control", "tstress", True)
+    t = qein.set_param(t, "control", "forc_conv_thr", min(float(qein.get(parsed, "control", "forc_conv_thr", 1e-4)), 1e-4))
+    t = qein.set_param(t, "control", "etot_conv_thr", min(float(qein.get(parsed, "control", "etot_conv_thr", 1e-5)), 1e-5))
+    t = qein.set_param(t, "control", "nstep", max(int(qein.get(parsed, "control", "nstep", 100) or 100), 100))
+    t = qein.set_param(t, "electrons", "conv_thr", min(float(qein.get(parsed, "electrons", "conv_thr", 1e-10)), 1e-10))
+    if qein._namelist_span(t, "ions") is None:
+        t = qein.set_param(t, "ions", "ion_dynamics", "bfgs")
+    if mode == "vc-relax":
+        t = qein.set_param(t, "cell", "press_conv_thr", min(float(qein.get(parsed, "cell", "press_conv_thr", 0.5)), 0.5))
+    return t
+
+
+def relaxed_input(text: str, out: Path, mode: str) -> tuple[str, dict]:
+    """The scf input with the final structure of a relax/vc-relax run (last structure if it did not converge).
+
+    Positions are written in crystal coordinates; for vc-relax the cell becomes ibrav = 0 with CELL_PARAMETERS in
+    angstrom, so the result does not depend on how the original input defined alat. if_pos flags are kept."""
+    from ase.io import read as ase_read
+    out_text = out.read_text(errors="replace")
+    final = ase_read(str(out), format="espresso-out", index=-1)
+    before = qein.read_structure(text)
+    parsed = qein.parse_input(text)
+    t = qein.set_param(text, "control", "calculation", "scf")
+    for nl, keys in (("control", ("forc_conv_thr", "etot_conv_thr", "nstep")), ("ions", ()), ("cell", ())):
+        for k in keys:
+            t = qein.remove_param(t, nl, k)
+    cell = final.cell.array if mode == "vc-relax" else before.cell.array
+    if mode == "vc-relax":
+        t = qein.set_param(t, "system", "ibrav", 0)
+        for k in ["A", "B", "C", "cosAB", "cosAC", "cosBC"] + [f"celldm({i})" for i in range(1, 7)]:
+            t = qein.remove_param(t, "system", k)
+        t = qein.replace_card(t, "CELL_PARAMETERS", "CELL_PARAMETERS angstrom\n" +
+                              "\n".join("  " + " ".join(f"{x:15.10f}" for x in v) for v in cell) + "\n")
+    frac = np.linalg.solve(cell.T, final.positions.T).T % 1.0
+    frac[np.isclose(frac, 1.0, atol=1e-9)] = 0.0
+    card = parsed["cards"]["ATOMIC_POSITIONS"]["lines"]
+    lines = []
+    for i, (lab, f) in enumerate(zip(before.info["labels"], frac)):
+        flags = card[i].split()[4:7] if i < len(card) else []
+        lines.append(f"  {lab:4s} " + " ".join(f"{x:14.10f}" for x in f) + ("  " + " ".join(flags) if len(flags) == 3 else ""))
+    t = qein.replace_card(t, "ATOMIC_POSITIONS", "ATOMIC_POSITIONS crystal\n" + "\n".join(lines) + "\n")
+    # the &IONS / &CELL namelists are not allowed for calculation = 'scf' in some QE versions: drop them
+    for nl in ("ions", "cell"):
+        sp = qein._namelist_span(t, nl)
+        if sp:
+            endline = t.find("\n", sp[2])
+            t = t[:sp[0]] + t[(len(t) if endline < 0 else endline + 1):]
+    p = re.findall(r"P=\s*(" + r"[-\d.]+" + r")", out_text)
+    f = re.findall(r"Total force =\s*([-\d.]+)", out_text)
+    summary = {"mode": mode, "converged": "End final coordinates" in out_text or "bfgs converged" in out_text,
+               "bfgs_steps": len(re.findall(r"^!", out_text, re.M)),
+               "volume_before_A3": float(before.get_volume()), "volume_after_A3": float(abs(np.linalg.det(cell))),
+               "abc_before": [float(x) for x in before.cell.lengths()], "abc_after": [float(x) for x in np.linalg.norm(cell, axis=1)],
+               "pressure_kbar_first": float(p[0]) if p else None, "pressure_kbar": float(p[-1]) if p else None,
+               "force_first": float(f[0]) if f else None, "force": float(f[-1]) if f else None,
+               "energy_change_ry": None}
+    e = re.findall(r"^!\s+total energy\s+=\s+([-\d.]+)", out_text, re.M)
+    if len(e) >= 2:
+        summary["energy_change_ry"] = float(e[-1]) - float(e[0])
+    return t, summary
 
 
 # --------------------------------------------------------------------------- pipeline
@@ -446,7 +530,7 @@ def run_pipeline(mgr: Manager, job: Job):
         if config.MAX_STEP_SECONDS:
             t = qein.set_param(t, "control", "max_seconds", float(max(60, config.MAX_STEP_SECONDS - 30)))
         calc = str(qein.get(parsed, "control", "calculation", "scf")).lower()
-        if calc not in ("scf", "relax", "vc-relax"):
+        if calc != "scf":       # relax/vc-relax run in their own step; scf.in then gets the relaxed structure
             t = qein.set_param(t, "control", "calculation", "scf")
         scf_in.write_text(t)
         names = [s["pseudo"] for s in qein.species_list(parsed)]
@@ -462,6 +546,28 @@ def run_pipeline(mgr: Manager, job: Job):
         job.log(f"Scratch (outdir) folder: {outdir}")
         job.log(f"Pseudopotentials ready: {', '.join(names)}")
     _timed(job, "prepare", prepare)
+
+    # ---- relaxation: every later step (SCF, bands, DOS, phonons, IR/Raman, UV-Vis, NMR) uses the relaxed structure
+    rmode = st.get("relax_mode")
+    if rmode and any(s["name"] == "relax" for s in st["steps"]):
+        def relax():
+            rd = job.scratch / "relax"
+            rd.mkdir(parents=True, exist_ok=True)
+            (d / "relax.in").write_text(relax_input(scf_in.read_text(), rmode, str(rd) + "/"))
+            rc = mgr.run(job, "pw.x", d / "relax.in", d / "relax.out", np_)
+            out_text = (d / "relax.out").read_text(errors="replace") if (d / "relax.out").exists() else ""
+            if not re.search(r"^!", out_text, re.M):
+                _check(job, "relax", d / "relax.out", rc)          # nothing usable: report the error and stop
+            new_text, summary = relaxed_input(scf_in.read_text(), d / "relax.out", rmode)
+            scf_in.write_text(new_text)
+            (d / "relax.json").write_text(json.dumps(summary, indent=1))
+            shutil.rmtree(rd, ignore_errors=True)
+            job.log(f"Relaxed structure ({rmode}, {summary['bfgs_steps']} SCF cycles, "
+                    f"{'converged' if summary['converged'] else 'NOT converged - using the last structure'}): "
+                    f"V {summary['volume_before_A3']:.3f} -> {summary['volume_after_A3']:.3f} A^3; scf.in updated.")
+            if not summary["converged"]:
+                job.step("relax", error="The relaxation did not converge (see relax.out); the last structure is used.")
+        _timed(job, "relax", relax)
 
     # ---- SCF
     def scf():
@@ -1212,6 +1318,21 @@ def analyse_job(job: Job) -> dict:
         checks.append({"level": "warn", "msg": f"Total force {summary['total_force']:.4f} Ry/bohr: the structure is not relaxed."})
     if summary.get("pressure_kbar") is not None and abs(summary["pressure_kbar"]) > 10:
         checks.append({"level": "info", "msg": f"Pressure {summary['pressure_kbar']:.1f} kbar: the lattice constant is not at equilibrium for this functional/cutoff."})
+    if (d / "relax.json").exists():
+        rx = json.loads((d / "relax.json").read_text())
+        res["relax"] = rx
+        ab, aa = rx.get("abc_before") or [], rx.get("abc_after") or []
+        dv = (rx["volume_after_A3"] / rx["volume_before_A3"] - 1) * 100 if rx.get("volume_before_A3") else 0
+        lens = ", ".join(f"{b:.4f} → {a:.4f}" for b, a in zip(ab, aa)) if rx["mode"] == "vc-relax" else ""
+        fp = (f"force {rx['force_first']:.4f} → {rx['force']:.5f} Ry/bohr" if rx.get("force") is not None
+              and rx.get("force_first") is not None else "")
+        pp = (f", pressure {rx['pressure_kbar_first']:.1f} → {rx['pressure_kbar']:.1f} kbar"
+              if rx["mode"] == "vc-relax" and rx.get("pressure_kbar") is not None else "")
+        msg = (f"Structure relaxed first ({rx['mode']}, {rx['bfgs_steps']} SCF cycles): "
+               + (f"a, b, c (Å) {lens}; volume {dv:+.1f}%; " if lens else "") + fp + pp
+               + ". All results below are for the relaxed structure (scf.in).")
+        checks.append({"level": "info" if rx.get("converged") else "warn",
+                       "msg": msg if rx.get("converged") else msg + " The relaxation did NOT converge: the last structure was used."})
     if res.get("projwfc", {}).get("spilling") and res["projwfc"]["spilling"] > 0.05:
         checks.append({"level": "info", "msg": f"PDOS spilling parameter {res['projwfc']['spilling']:.3f}: projections are approximate."})
     # metals: a Fermi level that moves on the denser NSCF grid means the SCF k-grid is not converged
