@@ -34,10 +34,19 @@ def matdyn_path_input(prefix: str, kpath_card: str) -> str:
             f"  q_in_band_form = .true.\n  q_in_cryst_coord = .true.\n/\n{len(pts)}\n" + "\n".join(pts) + "\n")
 
 
-def matdyn_dos_input(prefix: str, grid: list[int], delta_cm: float = 1.0) -> str:
+def matdyn_dos_input(prefix: str, grid: list[int], delta_cm: float = 1.0, degauss_cm: float = 3.0) -> str:
+    """Phonon DOS with Gaussian broadening: matdyn's tetrahedron method can return NaN for every point."""
     return (f"&INPUT\n  asr = 'crystal'\n  flfrc = '{prefix}.fc'\n  flfrq = ''\n  dos = .true.\n"
             f"  fldos = '{prefix}.phdos'\n  nk1 = {grid[0]}, nk2 = {grid[1]}, nk3 = {grid[2]}\n"
-            f"  deltaE = {delta_cm}\n/\n")
+            f"  deltaE = {delta_cm}\n  degauss = {degauss_cm}\n/\n")
+
+
+def matdyn_mesh_input(prefix: str, grid: list[int]) -> str:
+    """Frequencies on a full uniform q-mesh (crystal coordinates) for thermodynamics by direct summation."""
+    pts = [f"  {i / grid[0]:.6f} {j / grid[1]:.6f} {k / grid[2]:.6f}"
+           for i in range(grid[0]) for j in range(grid[1]) for k in range(grid[2])]
+    return (f"&INPUT\n  asr = 'crystal'\n  flfrc = '{prefix}.fc'\n  flfrq = '{prefix}.mesh.freq'\n"
+            f"  q_in_cryst_coord = .true.\n/\n{len(pts)}\n" + "\n".join(pts) + "\n")
 
 
 # ----------------------------------------------------------------------------- parsers
@@ -68,6 +77,9 @@ def parse_freq(path: str | Path) -> dict:
 def parse_phdos(path: str | Path) -> dict:
     """matdyn.x DOS file: frequency (cm^-1), total DOS, and one projected DOS per atom."""
     data = np.loadtxt(path, comments="#")
+    if np.isnan(data[:, 1]).all():
+        raise ValueError(f"{Path(path).name}: the phonon DOS is NaN everywhere (matdyn tetrahedron method failed; use degauss)")
+    data = np.nan_to_num(data)
     return {"freq": data[:, 0], "dos": data[:, 1], "pdos_atoms": data[:, 2:].T if data.shape[1] > 2 else np.empty((0, len(data)))}
 
 
@@ -118,6 +130,46 @@ def thermodynamics(freq_cm: np.ndarray, dos: np.ndarray, natoms: int,
         out["U"].append(U * per_mol / 1000)             # kJ/mol
     out["zpe_ev_atom"] = zpe / natoms
     out["imaginary_fraction"] = float(neg)
+    out["method"] = "from the phonon DOS (broadened; entropy slightly overestimated)"
+    out["units"] = {"Cv": "J/(mol·K)", "S": "J/(mol·K)", "F": "kJ/mol", "U": "kJ/mol", "per": "mole of atoms"}
+    return out
+
+
+def thermodynamics_modes(freq_cm: np.ndarray, natoms: int, temps: np.ndarray | None = None) -> dict:
+    """Harmonic thermodynamics per mole of atoms by direct summation over all modes of a uniform q-mesh.
+
+    More accurate than integrating a broadened DOS, which shifts weight to low frequencies and overestimates
+    the entropy and the low-temperature heat capacity. freq_cm: (nq, 3*natoms).
+    """
+    if temps is None:
+        temps = np.arange(0.0, 1001.0, 10.0)
+    f = np.asarray(freq_cm, float)
+    nq = f.shape[0]
+    allf = f.ravel()
+    imag = float(np.mean(allf < IMAG_THRESHOLD_CM1))
+    e = allf[allf > 1e-3] * CM1_EV                       # eV; acoustic zeros at Gamma and imaginary modes dropped
+    per_mol = EV_JMOL / natoms / nq                       # eV summed over the mesh -> J per mole of atoms
+    zpe = np.sum(e / 2)
+    out = {"T": temps.tolist(), "Cv": [], "S": [], "F": [], "U": []}
+    for T in temps:
+        if T < 1e-8:
+            out["Cv"].append(0.0)
+            out["S"].append(0.0)
+            out["F"].append(zpe * per_mol / 1000)
+            out["U"].append(zpe * per_mol / 1000)
+            continue
+        x = np.clip(e / (KB_EV * T), 1e-12, 700)
+        n = 1 / np.expm1(x)
+        U = np.sum(e * (0.5 + n))
+        F = np.sum(e / 2 + KB_EV * T * np.log1p(-np.exp(-x)))
+        Cv = np.sum(KB_EV * x ** 2 * np.exp(-x) / (-np.expm1(-x)) ** 2)
+        out["Cv"].append(Cv * per_mol)
+        out["S"].append((U - F) / T * per_mol)
+        out["F"].append(F * per_mol / 1000)
+        out["U"].append(U * per_mol / 1000)
+    out["zpe_ev_atom"] = zpe / natoms / nq
+    out["imaginary_fraction"] = imag
+    out["method"] = f"direct sum over a {round(nq ** (1 / 3))}³ q-mesh"
     out["units"] = {"Cv": "J/(mol·K)", "S": "J/(mol·K)", "F": "kJ/mol", "U": "kJ/mol", "per": "mole of atoms"}
     return out
 

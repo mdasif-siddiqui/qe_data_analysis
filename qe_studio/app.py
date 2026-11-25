@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
-from qestudio import config, jobs, phonon, pseudos, qein, qeout
+from qestudio import cif, config, jobs, nmr, phonon, pseudos, qein, qeout
 
 ROOT = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
@@ -103,6 +103,7 @@ def status():
         "runs_dir": "" if config.PUBLIC else win_path(jobs.RUNS),
         "pseudo_library": pseudos.library_listing(),
         "public": config.PUBLIC,
+        "gipaw": nmr.available(),
         "limits": {"atoms": config.MAX_ATOMS, "ecutwfc": config.MAX_ECUTWFC, "kpoints": config.MAX_KPOINTS,
                    "step_seconds": config.MAX_STEP_SECONDS, "keep_days": config.KEEP_DAYS} if config.PUBLIC else None,
     })
@@ -171,6 +172,22 @@ def inspect():
     return jsonify(jobs._jsonable(res))
 
 
+@app.post("/api/convert-cif")
+def convert_cif():
+    f = request.files.get("cif")
+    text = f.read().decode("utf-8", "replace") if f else request.form.get("text", "")
+    if not text.strip():
+        abort(400, "No CIF given")
+    try:
+        r = cif.cif_to_scf(text, functional=request.form.get("functional", "pbe"),
+                           primitive=request.form.get("primitive", "1") == "1",
+                           occupations=request.form.get("occupations", "smearing"),
+                           kspacing=float(request.form.get("kspacing") or 0.25))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(jobs._jsonable(r))
+
+
 @app.post("/api/jobs")
 def submit():
     text, name, pp = _read_upload()
@@ -204,6 +221,8 @@ def job_detail(jid):
     cur = st.get("current_step")
     names = {"scf": "scf.out", "bands": "bands.out", "nscf": "nscf.out", "dos": "dos.out", "pdos": "projwfc.out",
              "ph_scf": "phonon/scf.out", "ph": "phonon/ph.out", "q2r": "phonon/q2r.out", "matdyn": "phonon/matdyn_dos.out",
+             "sp_scf": "spectra/scf.out", "sp_ph": "spectra/ph.out", "dynmat": "spectra/dynmat.out",
+             "uv_nscf": "uvvis/nscf.out", "nmr_scf": "nmr/scf.out", "nmr": "nmr/gipaw.out",
              "bandsx": "bands_pp.out"}
     if st.get("status") == "running" and cur in names and (job.dir / names[cur]).exists():
         st["live"] = "\n".join((job.dir / names[cur]).read_text(errors="replace").splitlines()[-25:])
@@ -230,6 +249,12 @@ def cancel(jid):
 def reanalyse(jid):
     job = job_or_404(jid)
     jobs.analyse_job(job)
+    # after a successful re-analysis the run's status follows its calculation steps
+    job.step("analysis", status="done")
+    st = job.load()
+    if st.get("status") not in ("running", "queued", "cancelled"):
+        failed = [x["name"] for x in st["steps"] if x.get("status") == "failed"]
+        job.update(status="done" if not failed else "done_with_errors", failed_steps=failed, error=None, current_step=None)
     return jsonify({"ok": True})
 
 

@@ -21,10 +21,10 @@ fi
 
 if ! "$MF/bin/conda" env list | grep -q '^qe '; then
   echo ">>> Creating conda env 'qe' (Quantum ESPRESSO + Python tools)"
-  "$MF/bin/conda" create -n qe -c conda-forge -y qe python numpy scipy matplotlib ase flask plotly
+  "$MF/bin/conda" create -n qe -c conda-forge -y qe python numpy scipy matplotlib ase flask plotly spglib h5py
 else
   echo ">>> Env 'qe' exists; making sure QE, Python and the packages are present"
-  "$MF/bin/conda" install -n qe -c conda-forge -y qe python numpy scipy matplotlib ase flask plotly
+  "$MF/bin/conda" install -n qe -c conda-forge -y qe python numpy scipy matplotlib ase flask plotly spglib h5py
 fi
 
 if dpkg -l 2>/dev/null | grep -q '^ii  quantum-espresso'; then

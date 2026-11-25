@@ -228,6 +228,10 @@ async function loadStatus() {
     $("#np-hint").textContent = `${SYS.physical_cores} physical cores`;
     $("#runs-dir").textContent = SYS.public ? "Runs started from this browser" : SYS.runs_dir;
     applyPublicMode();
+    if (!SYS.gipaw) {
+      $("#o-nmr").disabled = true; $("#o-nmr").checked = false;
+      $("#nmr-hint").innerHTML = "GIPAW is not installed on this computer. Run <code>build_gipaw.sh</code> once in Ubuntu (README, installation step 5; 30–60 minutes), then restart QE Studio.";
+    }
   } catch (e) { $("#sys").textContent = "server not reachable"; }
 }
 $("#o-np").addEventListener("input", (e) => (e.target.dataset.touched = 1));
@@ -252,8 +256,50 @@ let INPUT = { name: "scf.in", pseudos: [] };
 let inspectTimer = null;
 const editor = $("#editor");
 
+/* CIF conversion */
+let CIF = null;
+async function convertCif() {
+  if (!CIF) return;
+  const fd = new FormData();
+  fd.append("text", CIF.text);
+  fd.append("functional", $("#cif-func").value);
+  fd.append("occupations", $("#cif-occ").value);
+  fd.append("kspacing", $("#cif-ksp").value);
+  fd.append("primitive", $("#cif-prim").checked ? "1" : "0");
+  $("#cif-info").textContent = "Converting… (finding pseudopotentials can take a few seconds)";
+  $("#cif-msgs").innerHTML = "";
+  let r;
+  try { r = await api("/api/convert-cif", { method: "POST", body: fd }); }
+  catch (e) { $("#cif-info").textContent = ""; $("#cif-msgs").innerHTML = `<div class="msg error"><span class="ic">✕</span><span>${esc(e.message)}</span></div>`; return; }
+  const i = r.info;
+  $("#cif-info").innerHTML = `${esc(i.formula)} · ${i.natoms} atoms${i.natoms !== i.natoms_cif ? ` (reduced from ${i.natoms_cif})` : ""}` +
+    `${i.spacegroup ? ` · space group ${esc(i.spacegroup)}` : ""} · ecutwfc ${i.ecutwfc} / ecutrho ${i.ecutrho} Ry · k-grid ${i.kgrid.join("×")}<br>` +
+    Object.entries(i.pseudos).map(([el, n]) => `${esc(el)}: ${n ? esc(n) : "<b>none found</b>"}`).join(" · ");
+  $("#cif-msgs").innerHTML = r.warnings.map((m) => `<div class="msg warn"><span class="ic">!</span><span>${esc(m)}</span></div>`).join("");
+  editor.value = r.text;
+  INPUT.name = r.name;
+  $("#file-names").textContent = [CIF.name + " → " + r.name, ...INPUT.pseudos.map((p) => p.name)].join(" · ");
+  $("#cif-save").disabled = false;
+  runInspect();
+}
+function startCif(name, text) {
+  CIF = { name, text };
+  $("#cif-panel").hidden = false;
+  $("#cif-name").textContent = name;
+  convertCif();
+}
+$("#cif-go").addEventListener("click", convertCif);
+["#cif-func", "#cif-occ", "#cif-prim"].forEach((s) => $(s).addEventListener("change", convertCif));
+$("#cif-save").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([editor.value], { type: "text/plain" }));
+  a.download = INPUT.name; a.click();
+});
+
 function readFiles(list) {
   const files = [...list];
+  const cifFile = files.find((f) => /\.cif$/i.test(f.name));
+  if (cifFile) { cifFile.text().then((t) => startCif(cifFile.name, t)); return; }
   const upf = files.filter((f) => /\.upf$/i.test(f.name));
   const inp = files.find((f) => !/\.upf$/i.test(f.name));
   if (upf.length) INPUT.pseudos = [...INPUT.pseudos.filter((p) => !upf.some((u) => u.name === p.name)), ...upf];
@@ -270,7 +316,14 @@ for (const [dropId, handler] of [["#drop", readFiles], ["#drop2", (f) => analyze
   d.addEventListener("dragleave", () => d.classList.remove("over"));
   d.addEventListener("drop", (e) => { e.preventDefault(); d.classList.remove("over"); handler(e.dataTransfer.files); });
 }
-editor.addEventListener("input", () => { clearTimeout(inspectTimer); inspectTimer = setTimeout(runInspect, 600); });
+editor.addEventListener("input", () => {
+  clearTimeout(inspectTimer);
+  inspectTimer = setTimeout(() => {
+    const t = editor.value.trimStart();
+    if (/^data_/m.test(t) && /_cell_length_a/.test(t)) startCif("pasted CIF", editor.value);  // a CIF pasted into the editor
+    else runInspect();
+  }, 600);
+});
 async function loadExample(name, kpath) {
   const ex = await api(`/api/example?name=${name}`);
   INPUT = { name: ex.name, pseudos: [] };
@@ -336,7 +389,9 @@ $("#run").addEventListener("click", async () => {
     nscf_grid: $("#o-nscf").value.trim() ? $("#o-nscf").value.trim().split(/[\s,x×]+/).map(Number) : null,
     ecut_list: $("#o-ecut").value.trim(), k_list: $("#o-klist").value.trim(), conv_thr_mev: Number($("#o-thr").value) || 1,
     np: Number($("#o-np").value) || SYS.physical_cores, download_pseudos: $("#o-dl").checked,
-    phonons: $("#o-ph").checked,
+    phonons: $("#o-ph").checked, spectra: $("#o-sp").checked,
+    nmr: $("#o-nmr").checked,
+    uvvis: $("#o-uv").checked, uv_scissor: Number($("#o-uvshift").value) || 0, uv_sigma: Number($("#o-uvsig").value) || 0.1,
     ph_qgrid: $("#o-qgrid").value.trim() ? $("#o-qgrid").value.trim().split(/[\s,x×]+/).map(Number) : null,
   };
   const fd = formData();
@@ -440,6 +495,9 @@ function renderResults(st) {
   if (R.conv_ecut) { plotConv($("#p-conv-ecut"), R.conv_ecut, "ecutwfc (Ry)"); $("#t-conv-ecut").innerHTML = convTable(R.conv_ecut); }
   if (R.conv_k) { plotConv($("#p-conv-k"), R.conv_k, "k-point grid"); $("#t-conv-k").innerHTML = convTable(R.conv_k); }
   renderPhonons(R);
+  renderSpectra(R);
+  renderUV(R);
+  renderNMR(R);
   plotStructure($("#p-struct"), R.structure);
   // details
   const st0 = R.structure || {};
@@ -537,7 +595,7 @@ function renderPhonons(R) {
     (ph.asr_violation_cm1 !== undefined && ph.asr_violation_cm1 !== null ? ` Acoustic modes at Γ before the sum rule: ${ph.asr_violation_cm1.toFixed(1)} cm⁻¹.` : "");
   if (ph.thermo) {
     plotThermo($("#p-thermo"), ph.thermo, $("#th-key").value);
-    $("#th-note").textContent = "Harmonic approximation from the phonon DOS, per mole of atoms." +
+    $("#th-note").textContent = `Harmonic approximation, per mole of atoms; ${ph.thermo.method || "from the phonon DOS"}.` +
       (ph.thermo.imaginary_fraction > 0.001 ? ` ${(ph.thermo.imaginary_fraction * 100).toFixed(1)}% of modes are imaginary and left out.` : "");
   }
   const g = ph.gamma_cm1 || [], raw = ph.gamma_raw_cm1 || [];
@@ -546,6 +604,171 @@ function renderPhonons(R) {
     "</tbody></table>" : '<div class="empty">Γ is not on the q-path.</div>';
 }
 $("#ph-unit").addEventListener("change", () => JOB && JOB.results && renderPhonons(JOB.results));
+
+/* ------------------------------------------------------------------ IR / Raman */
+function lorentzSpectrum(lines, fwhm, xmax) {
+  // lines: [{x, y}] -> broadened curve on a 0.5 cm-1 grid
+  const g = fwhm / 2, xs = [], ys = [];
+  for (let x = 0; x <= xmax; x += 0.5) {
+    let y = 0;
+    for (const l of lines) y += l.y * (g * g) / ((x - l.x) ** 2 + g * g);
+    xs.push(x); ys.push(y);
+  }
+  return { xs, ys };
+}
+function plotSpectrum(el, lines, fwhm, xmax, title, color) {
+  const sp = lorentzSpectrum(lines, fwhm, xmax);
+  const ymax = Math.max(...sp.ys, 1e-30);
+  const sx = [], sy = [];
+  lines.forEach((l) => { sx.push(l.x, l.x, null); sy.push(0, l.y / ymax, null); });
+  Plotly.react(el, [
+    { x: sp.xs, y: sp.ys.map((v) => v / ymax), mode: "lines", line: { color, width: 2 }, name: title, showlegend: false,
+      hovertemplate: "%{x:.1f} cm⁻¹<br>%{y:.3f}<extra></extra>" },
+    { x: sx, y: sy, mode: "lines", line: { color: css("--muted"), width: 1 }, hoverinfo: "skip", showlegend: false },
+  ], layout({ xaxis: axis({ title: "Frequency (cm⁻¹)", range: [0, xmax] }),
+    yaxis: axis({ title: `${title} (normalised)`, range: [0, 1.08] }), margin: { l: 60, r: 16, t: 20, b: 48 } }), CONFIG);
+}
+function renderSpectra(R) {
+  const sp = R.spectra;
+  $("#sp-section").hidden = !sp || !!sp.skipped;
+  if (!sp || sp.skipped) return;
+  const modes = (sp.modes || []).filter((m) => m.freq_cm1 > 10);
+  const fwhm = Number($("#sp-fwhm").value) || 8;
+  const xmax = Math.ceil(((Math.max(...modes.map((m) => m.freq_lo_cm1 || m.freq_cm1), 100)) * 1.15) / 50) * 50;
+  const nIR = modes.filter((m) => m.ir_active).length, nR = modes.filter((m) => m.raman_active).length;
+  const born = sp.born || [];
+  $("#sp-tiles").innerHTML = [
+    tile("ε∞ (electronic)", fmt(sp.eps_inf_mean, 2), "average of the diagonal; LDA/GGA overestimate it"),
+    tile("Born charges Z*", born.map((z) => `${esc(z.element)} ${z.mean >= 0 ? "+" : ""}${z.mean.toFixed(2)}`).join(" · ") || "–",
+      sp.born_sum !== null && sp.born_sum !== undefined ? `sum ${sp.born_sum.toFixed(3)} before the sum rule` : ""),
+    tile("LO–TO splitting", sp.max_lo_to_cm1 !== null && sp.max_lo_to_cm1 !== undefined ? `${sp.max_lo_to_cm1.toFixed(1)} <small>cm⁻¹</small>` : "–", "q along x"),
+    tile("Active modes", `${nIR} IR · ${sp.raman_computed ? nR : "–"} Raman`, `${modes.length} optical modes at Γ`),
+  ].join("");
+  // IR absorbs at the TO frequencies
+  plotSpectrum($("#p-ir"), modes.map((m) => ({ x: m.freq_cm1, y: m.ir || 0 })), fwhm, xmax, "IR absorption", css("--s1"));
+  if (sp.raman_computed) {
+    const nu0 = 1e7 / 532, hck = 1.438777;
+    const rl = modes.map((m) => {
+      const a = m.raman || 0;
+      const y = $("#sp-rmode").value === "activity" ? a
+        : a * (nu0 - m.freq_cm1) ** 4 / m.freq_cm1 / (1 - Math.exp(-hck * m.freq_cm1 / 300));
+      return { x: m.freq_cm1, y };
+    });
+    plotSpectrum($("#p-raman"), rl, fwhm, xmax, "Raman", css("--s2"));
+  } else $("#p-raman").innerHTML = `<div class="empty">Raman not calculated${sp.reason ? ": " + esc(sp.reason) : ""}</div>`;
+  $("#sp-note").textContent = "Peaks at the TO frequencies at Γ, Lorentzian broadening. IR intensities in km/mol, Raman activities in Å⁴/amu (dynmat.x). " +
+    "Grey sticks show the individual modes. Two-phonon and anharmonic features are not included.";
+  $("#sp-modes").innerHTML = `<table class="tbl"><thead><tr><th>Mode</th><th class="num">TO (cm⁻¹)</th><th class="num">LO (cm⁻¹)</th>` +
+    `<th class="num">IR (km/mol)</th><th class="num">Raman (Å⁴/amu)</th><th class="num">depol.</th><th>Active</th></tr></thead><tbody>` +
+    modes.map((m) => `<tr><td>${m.mode}</td><td class="num">${m.freq_cm1.toFixed(1)}</td><td class="num">${m.freq_lo_cm1 !== undefined ? m.freq_lo_cm1.toFixed(1) : "–"}</td>` +
+      `<td class="num">${fmt(m.ir, 2)}</td><td class="num">${sp.raman_computed ? fmt(m.raman, 2) : "–"}</td><td class="num">${sp.raman_computed ? fmt(m.depol, 2) : "–"}</td>` +
+      `<td>${[m.ir_active ? "IR" : "", m.raman_active && sp.raman_computed ? "Raman" : ""].filter(Boolean).join(" + ") || "silent"}</td></tr>`).join("") + "</tbody></table>";
+  const eps = sp.eps_inf || [];
+  $("#sp-diel").innerHTML = (eps.length ? `<div class="muted small" style="margin-bottom:4px">ε∞ (Cartesian)</div><table class="tbl"><tbody>` +
+    eps.map((r) => `<tr>${r.map((v) => `<td class="num">${v.toFixed(3)}</td>`).join("")}</tr>`).join("") + "</tbody></table>" : "") +
+    (born.length ? `<div class="muted small" style="margin:10px 0 4px">Born effective charges Z* (e), before the acoustic sum rule</div><table class="tbl"><thead><tr><th>Atom</th><th class="num">mean</th><th class="num">xx</th><th class="num">yy</th><th class="num">zz</th></tr></thead><tbody>` +
+      born.map((z) => `<tr><td>${z.atom} ${esc(z.element)}</td><td class="num">${z.mean.toFixed(3)}</td>${[0, 1, 2].map((i) => `<td class="num">${z.tensor[i][i].toFixed(3)}</td>`).join("")}</tr>`).join("") + "</tbody></table>" : "");
+}
+/* ------------------------------------------------------------------ UV-Vis */
+function renderUV(R) {
+  const uv = R.uvvis;
+  $("#uv-section").hidden = !uv || !!uv.skipped;
+  if (!uv || uv.skipped) return;
+  const m = uv.meta || {};
+  $("#uv-tiles").innerHTML = [
+    tile("ε∞ (static, electronic)", fmt(m.eps_static, 2), "ε₁ at zero frequency"),
+    tile("Absorption onset", uv.onset_ev ? `${uv.onset_ev.toFixed(2)} <small>eV</small>` : "–", uv.onset_nm ? `${uv.onset_nm.toFixed(0)} nm · where α reaches 10⁴ cm⁻¹` : "α stays below 10⁴ cm⁻¹"),
+    tile("Refractive index", fmt(uv.n_589, 2), "n at 589 nm"),
+    tile("f-sum rule", m.fsum_ratio ? `${(m.fsum_ratio * 100).toFixed(0)} <small>%</small>` : "–", `${m.nbnd} bands, ${m.grid ? m.grid.join("×") : ""} k-grid${m.shift_ev ? ` · scissor +${m.shift_ev} eV` : ""}`),
+  ].join("");
+  const E = uv.E, nm = E.map((e) => (e > 0 ? 1239.84198 / e : null));
+  const sel = nm.map((l, i) => l !== null && l >= 150 && l <= 1500 ? i : -1).filter((i) => i >= 0);
+  Plotly.react($("#p-uv"), [{ x: sel.map((i) => nm[i]), y: sel.map((i) => uv.alpha[i]), mode: "lines", line: { color: css("--s1"), width: 2 },
+    showlegend: false, hovertemplate: "%{x:.0f} nm<br>α = %{y:.3s} cm⁻¹<extra></extra>" }],
+    layout({ xaxis: axis({ title: "Wavelength (nm)", range: [150, 1500] }),
+      yaxis: axis({ title: "Absorption coefficient α (cm⁻¹)", type: $("#uv-log").checked ? "log" : "linear", exponentformat: "power" }),
+      shapes: [380, 750].map((x) => ({ type: "line", x0: x, x1: x, yref: "paper", y0: 0, y1: 1, line: { color: css("--grid"), width: 1, dash: "dot" } })),
+      annotations: [{ x: 565, yref: "paper", y: 1, text: "visible", showarrow: false, yshift: 8, font: { size: 11, color: css("--text-secondary") } }] }), CONFIG);
+  const key = $("#uv-key").value, col = SERIES();
+  const tr = (y, name, c) => ({ x: E, y, mode: "lines", name, line: { color: c, width: 2 }, hovertemplate: `${name} %{y:.3f}<extra></extra>` });
+  const defs = {
+    eps: [[tr(uv.eps1, "ε₁", col[0]), tr(uv.eps2, "ε₂", col[1])], "ε"],
+    nk: [[tr(uv.n, "n", col[0]), tr(uv.k, "k", col[1])], "n, k"],
+    R: [[tr(uv.R, "R", col[0])], "Reflectivity"],
+    alphaE: [[tr(uv.alpha, "α", col[0])], "α (cm⁻¹)"],
+  }[key];
+  Plotly.react($("#p-uv2"), defs[0], layout({ xaxis: axis({ title: "Photon energy (eV)", range: [0, Math.min(15, E[E.length - 1])] }),
+    yaxis: axis({ title: defs[1], exponentformat: "power" }), hovermode: "x unified", showlegend: defs[0].length > 1 }), CONFIG);
+  $("#uv-note").textContent = "Independent-particle approximation (no excitons, no local fields; the nonlocal-pseudopotential commutator is left out, " +
+    "which tends to overestimate ε by 10–20%). LDA/GGA underestimate band gaps, so the onset is red-shifted unless a scissor shift is used.";
+}
+/* ------------------------------------------------------------------ NMR */
+const nmrRef = (el) => { const v = localStorage.getItem("qe-nmr-ref-" + el); return v === null || v === "" ? null : Number(v); };
+let NMR_RUNS = null;
+async function renderNMR(R) {
+  const nm = R.nmr;
+  $("#nmr-section").hidden = !nm || !!nm.skipped || !(nm.atoms || []).length;
+  if ($("#nmr-section").hidden) return;
+  const els = Object.keys(nm.mean_sigma);
+  const iso = (el) => (nm.isotopes || {})[el] || el;
+  $("#nmr-tiles").innerHTML = els.map((el) => {
+    const ref = nmrRef(el), s = nm.mean_sigma[el];
+    return tile(`${iso(el)} (${nm.atoms.filter((a) => a.element === el).length} sites)`, `${s.toFixed(2)} <small>ppm σ</small>`,
+      ref !== null ? `δ = ${(ref - s).toFixed(2)} ppm (σ_ref ${ref})` : "set σ_ref for chemical shifts");
+  }).join("") + (nm.fsum_target ? tile("f-sum rule", `${nm.fsum_trace.toFixed(3)}`, `should be ${nm.fsum_target.toFixed(3)} (quality check)`) : "");
+  $("#nmr-table").innerHTML = `<table class="tbl"><thead><tr><th>Atom</th><th class="num">σ_iso (ppm)</th><th class="num">δ_iso (ppm)</th>` +
+    `<th class="num">anisotropy</th><th class="num">η</th><th class="num">σ_xx / σ_yy / σ_zz</th></tr></thead><tbody>` +
+    nm.atoms.map((a) => {
+      const ref = nmrRef(a.element), p = a.principal || {};
+      return `<tr><td>${a.atom} ${esc(iso(a.element))}</td><td class="num">${a.sigma_iso.toFixed(2)}</td>` +
+        `<td class="num">${ref !== null ? (ref - a.sigma_iso).toFixed(2) : "–"}</td><td class="num">${fmt(a.anisotropy, 2)}</td>` +
+        `<td class="num">${fmt(a.eta, 3)}</td><td class="num">${["xx", "yy", "zz"].map((k) => fmt(p[k], 1)).join(" / ")}</td></tr>`;
+    }).join("") + "</tbody></table>";
+  // references
+  if (NMR_RUNS === null) { try { NMR_RUNS = (await api("/api/jobs")).filter((j) => j.nmr_sigma); } catch { NMR_RUNS = []; } }
+  $("#nmr-refs").innerHTML = els.map((el) => {
+    const runs = NMR_RUNS.filter((j) => j.nmr_sigma[el] !== undefined);
+    return `<div class="nmr-ref" data-el="${esc(el)}"><b>${esc(iso(el))}</b>
+      <label>σ_ref <input class="ref-val" type="number" step="0.01" value="${nmrRef(el) ?? ""}" style="width:90px"> ppm</label>
+      <span class="muted small">or from</span>
+      <select class="ref-run"><option value="">reference run…</option>${runs.map((j) => `<option value="${esc(j.id)}">${esc(j.prefix)} · σ=${j.nmr_sigma[el].toFixed(2)}</option>`).join("")}</select>
+      <label>measured δ <input class="ref-exp" type="number" step="0.1" style="width:80px"> ppm</label>
+      <button class="ref-apply">Use</button></div>`;
+  }).join("");
+  $$("#nmr-refs .nmr-ref").forEach((row) => {
+    const el = row.dataset.el;
+    row.querySelector(".ref-val").addEventListener("change", (e) => { localStorage.setItem("qe-nmr-ref-" + el, e.target.value); renderNMR(R); });
+    row.querySelector(".ref-apply").addEventListener("click", () => {
+      const id = row.querySelector(".ref-run").value, exp = row.querySelector(".ref-exp").value;
+      const run = NMR_RUNS.find((j) => j.id === id);
+      if (!run || exp === "") { toast("Choose a reference run and enter its measured shift."); return; }
+      localStorage.setItem("qe-nmr-ref-" + el, (Number(exp) + run.nmr_sigma[el]).toFixed(2));
+      renderNMR(R);
+    });
+  });
+  // spectrum
+  const sel = $("#nmr-el"), prev = sel.value;
+  sel.innerHTML = els.map((el) => `<option value="${esc(el)}">${esc(iso(el))}</option>`).join("");
+  if (els.includes(prev)) sel.value = prev;
+  plotNMR(nm, sel.value);
+}
+function plotNMR(nm, el) {
+  const ref = nmrRef(el), fw = Number($("#nmr-fwhm").value) || 1, g = fw / 2;
+  const xs = nm.atoms.filter((a) => a.element === el).map((a) => (ref !== null ? ref - a.sigma_iso : -a.sigma_iso));
+  const lo = Math.min(...xs) - 10 - 5 * fw, hi = Math.max(...xs) + 10 + 5 * fw;
+  const X = [], Y = [];
+  for (let x = lo; x <= hi; x += Math.max(0.01, fw / 20)) { X.push(x); Y.push(xs.reduce((s, c) => s + (g * g) / ((x - c) ** 2 + g * g), 0)); }
+  const ym = Math.max(...Y);
+  Plotly.react($("#p-nmr"), [{ x: X, y: Y.map((v) => v / ym), mode: "lines", line: { color: css("--s1"), width: 2 }, showlegend: false,
+    hovertemplate: "%{x:.2f} ppm<extra></extra>" }],
+    layout({ xaxis: axis({ title: ref !== null ? `δ (ppm), σ_ref = ${ref}` : "−σ (ppm), no reference set", autorange: "reversed" }),
+      yaxis: axis({ title: "intensity (normalised)", range: [0, 1.1] }) }), CONFIG);
+  $("#nmr-note").textContent = "Isotropic shifts with Lorentzian lines (one per site; equivalent sites add up). Powder line shapes from anisotropy are not simulated.";
+}
+$("#nmr-el").addEventListener("change", () => JOB && JOB.results && plotNMR(JOB.results.nmr, $("#nmr-el").value));
+$("#nmr-fwhm").addEventListener("change", () => JOB && JOB.results && plotNMR(JOB.results.nmr, $("#nmr-el").value));
+["#uv-log", "#uv-key"].forEach((s) => $(s).addEventListener("change", () => JOB && JOB.results && renderUV(JOB.results)));
+["#sp-fwhm", "#sp-rmode"].forEach((s) => $(s).addEventListener("change", () => JOB && JOB.results && renderSpectra(JOB.results)));
 $("#th-key").addEventListener("change", () => JOB && JOB.results && JOB.results.phonons && plotThermo($("#p-thermo"), JOB.results.phonons.thermo, $("#th-key").value));
 
 /* ------------------------------------------------------------------ analyse outputs */

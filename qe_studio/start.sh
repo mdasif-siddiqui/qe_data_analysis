@@ -14,7 +14,7 @@ PY="$ENV/bin/python"
 # (an existing 'qe' env made with only 'conda create -n qe qe' has pw.x but no Python).
 need_setup=0
 [ -x "$ENV/bin/pw.x" ] || need_setup=1
-{ [ -x "$PY" ] && "$PY" -c "import flask, plotly, ase, numpy" 2>/dev/null; } || need_setup=1
+{ [ -x "$PY" ] && "$PY" -c "import flask, plotly, ase, numpy, spglib" 2>/dev/null; } || need_setup=1
 
 if [ "$need_setup" = 1 ]; then
   echo "Quantum ESPRESSO or its Python packages are missing. Running setup (needs internet, about 5-10 minutes)..."

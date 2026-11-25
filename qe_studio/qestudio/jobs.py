@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import config, phonon, pseudos, qein, qeout
+from . import cif, config, nmr, optics, phonon, pseudos, qein, qeout, spectra
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNS = ROOT / "runs"
@@ -187,11 +187,15 @@ class Manager:
 
     # process execution ---------------------------------------------------------
     def run(self, job: Job, program: str, inp: Path, out: Path, np_: int, use_mpi: bool = True,
-            cwd: Path | None = None) -> int:
-        """Run a QE program, input via -in (pw.x) or stdin (post-processing)."""
+            cwd: Path | None = None, gipaw: bool = False) -> int:
+        """Run a QE program, input via -in (pw.x, gipaw.x) or stdin (post-processing).
+
+        gipaw=True runs the self-built pw.x/gipaw.x from ~/gipaw/bin with their own MPI (build_gipaw.sh)."""
         cwd = cwd or job.dir
         env = {**os.environ, "OMP_NUM_THREADS": "1",
                "PATH": f"{QE_BIN}:{os.environ.get('PATH', '')}"}
+        if gipaw:
+            env.update(nmr.env())
         # launch modes, tried in order until the program actually starts:
         #   "mpi" -> mpirun -np N ; "mpi_cma" -> same with CMA shared memory disabled ; "serial"
         if use_mpi and np_ > 1:
@@ -203,19 +207,19 @@ class Manager:
             env_m = dict(env)
             launcher: list[str] = []
             if mode in ("mpi", "mpi_cma"):
-                launcher = [exe("mpirun"), "-np", str(np_)]
+                launcher = [str(nmr.BUILD_ENV / "bin" / "mpirun") if gipaw else exe("mpirun"), "-np", str(np_)]
                 if os.geteuid() == 0:
                     launcher.insert(1, "--allow-run-as-root")
             if mode == "mpi_cma":
                 env_m["OMPI_MCA_smsc"] = "^cma"
                 env_m["OMPI_MCA_btl_vader_single_copy_mechanism"] = "none"
-            cmd = launcher + [exe(program)]
+            cmd = launcher + [str(nmr.GIPAW_BIN / program) if gipaw else exe(program)]
             stdin = subprocess.DEVNULL
-            if program == "pw.x":
+            if program in ("pw.x", "gipaw.x"):
                 cmd += ["-in", inp.name]
             else:
                 stdin = open(inp)
-            job.log(f"$ {'OMP_NUM_THREADS=1 ' + ' '.join(cmd)}{'' if program == 'pw.x' else ' < ' + inp.name} > {out.name}")
+            job.log(f"$ {'OMP_NUM_THREADS=1 ' + ' '.join(cmd)}{'' if program in ('pw.x', 'gipaw.x') else ' < ' + inp.name} > {out.name}")
             with open(out, "w") as fo, open(out.with_suffix(".err"), "w") as fe:
                 job.proc = subprocess.Popen(cmd, cwd=cwd, stdout=fo, stderr=fe, stdin=stdin, env=env_m,
                                             start_new_session=True)
@@ -296,6 +300,16 @@ def create_job(scf_text: str, scf_name: str, pseudo_files: dict[str, bytes], opt
                   {"name": "ph", "label": "Phonons: DFPT on q-grid (ph.x)"},
                   {"name": "q2r", "label": "Force constants (q2r.x)"},
                   {"name": "matdyn", "label": "Dispersion + phonon DOS (matdyn.x)"}]
+    if options.get("spectra"):
+        steps += [{"name": "sp_scf", "label": "IR/Raman: tight SCF (pw.x)"},
+                  {"name": "sp_ph", "label": "IR/Raman: Γ phonons, dielectric, Raman (ph.x)"},
+                  {"name": "dynmat", "label": "IR/Raman intensities (dynmat.x)"}]
+    if options.get("uvvis"):
+        steps += [{"name": "uv_nscf", "label": "UV-Vis: SCF + NSCF with empty bands (pw.x)"},
+                  {"name": "optics", "label": "UV-Vis: dielectric function and absorption"}]
+    if options.get("nmr"):
+        steps += [{"name": "nmr_scf", "label": "NMR: SCF (pw.x, GIPAW build)"},
+                  {"name": "nmr", "label": "NMR shielding tensors (gipaw.x)"}]
     if options.get("conv"):
         steps += [{"name": "conv_ecut", "label": "Cutoff convergence test"},
                   {"name": "conv_k", "label": "k-point convergence test"}]
@@ -551,6 +565,42 @@ def run_pipeline(mgr: Manager, job: Job):
                     job.step(s_, status="skipped" if cur.get("status") == "pending" else "failed",
                              **({} if cur.get("status") == "pending" else {"error": str(e)}))
 
+    # ---- IR / Raman
+    if opts.get("spectra"):
+        try:
+            run_spectra(mgr, job, base_calc_text, prefix, scf_res, np_)
+        except Exception as e:
+            job.log(f"IR/Raman stopped: {e}")
+            for s_ in ("sp_scf", "sp_ph", "dynmat"):
+                cur = next((x for x in job.load()["steps"] if x["name"] == s_), {})
+                if cur.get("status") in ("pending", "running"):
+                    job.step(s_, status="skipped" if cur.get("status") == "pending" else "failed",
+                             **({} if cur.get("status") == "pending" else {"error": str(e)}))
+
+    # ---- UV-Vis
+    if opts.get("uvvis"):
+        try:
+            run_uvvis(mgr, job, base_calc_text, prefix, opts, np_)
+        except Exception as e:
+            job.log(f"UV-Vis stopped: {e}")
+            for s_ in ("uv_nscf", "optics"):
+                cur = next((x for x in job.load()["steps"] if x["name"] == s_), {})
+                if cur.get("status") in ("pending", "running"):
+                    job.step(s_, status="skipped" if cur.get("status") == "pending" else "failed",
+                             **({} if cur.get("status") == "pending" else {"error": str(e)}))
+
+    # ---- NMR
+    if opts.get("nmr"):
+        try:
+            run_nmr(mgr, job, base_calc_text, prefix, np_)
+        except Exception as e:
+            job.log(f"NMR stopped: {e}")
+            for s_ in ("nmr_scf", "nmr"):
+                cur = next((x for x in job.load()["steps"] if x["name"] == s_), {})
+                if cur.get("status") in ("pending", "running"):
+                    job.step(s_, status="skipped" if cur.get("status") == "pending" else "failed",
+                             **({} if cur.get("status") == "pending" else {"error": str(e)}))
+
     # ---- convergence tests
     if opts.get("conv"):
         _timed(job, "conv_ecut", lambda: convergence(mgr, job, base_calc_text, "ecut", opts, np_))
@@ -630,6 +680,10 @@ def run_phonons(mgr: Manager, job: Job, text: str, prefix: str, opts: dict, np_:
         (pd / "matdyn_dos.in").write_text(phonon.matdyn_dos_input(prefix, grid))
         rc = mgr.run(job, "matdyn.x", pd / "matdyn_dos.in", pd / "matdyn_dos.out", 1, use_mpi=False, cwd=pd)
         _check(job, "matdyn", pd / "matdyn_dos.out", rc)
+        mesh = qein.kgrid_for_density(atoms, 16 if len(atoms) <= 8 else 8)
+        (pd / "matdyn_mesh.in").write_text(phonon.matdyn_mesh_input(prefix, mesh))
+        rc = mgr.run(job, "matdyn.x", pd / "matdyn_mesh.in", pd / "matdyn_mesh.out", 1, use_mpi=False, cwd=pd)
+        _check(job, "matdyn", pd / "matdyn_mesh.out", rc, required=False)
     _timed(job, "matdyn", matdyn)
 
 
@@ -667,6 +721,13 @@ def analyse_phonons(d: Path, prefix: str, symbols: list[str]) -> dict | None:
         res["gamma_raw_cm1"] = raw
         res["asr_violation_cm1"] = float(max(abs(v) for v in sorted(raw, key=abs)[:3])) if len(raw) >= 3 else None
     dos_f = pd / f"{prefix}.phdos"
+    mesh_f = pd / f"{prefix}.mesh.freq"
+    if mesh_f.exists():
+        th = phonon.thermodynamics_modes(phonon.parse_freq(mesh_f)["freq"], natoms)
+        res["thermo"] = th
+        res["zpe_mev_atom"] = th["zpe_ev_atom"] * 1000
+        res["cv_300"] = phonon.value_at(th, "Cv", 300)
+        res["s_300"] = phonon.value_at(th, "S", 300)
     if dos_f.exists():
         dd = phonon.parse_phdos(dos_f)
         res["dos"] = {"freq": dd["freq"].tolist(), "total": dd["dos"].tolist(), "elements": {}}
@@ -674,15 +735,183 @@ def analyse_phonons(d: Path, prefix: str, symbols: list[str]) -> dict | None:
             cur = res["dos"]["elements"].setdefault(sym, np.zeros_like(dd["dos"]))
             res["dos"]["elements"][sym] = cur + dd["pdos_atoms"][i]
         res["dos"]["elements"] = {k: v.tolist() for k, v in res["dos"]["elements"].items()}
-        th = phonon.thermodynamics(dd["freq"], dd["dos"], natoms)
-        res["thermo"] = th
-        res["zpe_mev_atom"] = th["zpe_ev_atom"] * 1000
-        res["cv_300"] = phonon.value_at(th, "Cv", 300)
-        res["s_300"] = phonon.value_at(th, "S", 300)
+        if "thermo" not in res:  # older runs without the q-mesh: fall back to the DOS
+            th = phonon.thermodynamics(dd["freq"], dd["dos"], natoms)
+            res["thermo"] = th
+            res["zpe_mev_atom"] = th["zpe_ev_atom"] * 1000
+            res["cv_300"] = phonon.value_at(th, "Cv", 300)
+            res["s_300"] = phonon.value_at(th, "S", 300)
     m = re.search(r"nq1\s*=\s*(\d+),\s*nq2\s*=\s*(\d+),\s*nq3\s*=\s*(\d+)", (pd / "ph.in").read_text()) if (pd / "ph.in").exists() else None
     res["qgrid"] = [int(m.group(i)) for i in (1, 2, 3)] if m else None
     res["stable"] = fmin > phonon.IMAG_THRESHOLD_CM1
     return res
+
+
+# --------------------------------------------------------------------------- IR / Raman
+def run_spectra(mgr: Manager, job: Job, text: str, prefix: str, scf_res: dict, np_: int):
+    """Gamma-point ph.x with epsil (and lraman when allowed), then dynmat.x for TO and LO modes."""
+    sd = job.dir / "spectra"
+    sd.mkdir(exist_ok=True)
+    parsed = qein.parse_input(text)
+    occ = str(qein.get(parsed, "system", "occupations", "fixed")).lower()
+    if occ != "fixed":
+        msg = "IR/Raman need an insulator with occupations = 'fixed' (the dielectric response of a metal is not defined)."
+        for s_ in ("sp_scf", "sp_ph", "dynmat"):
+            job.step(s_, status="skipped", error=msg)
+        (sd / "skipped.txt").write_text(msg)
+        return
+    types = sorted({cif.pseudo_kind(p) for p in (job.dir / "pseudos").iterdir() if p.is_file()})
+    raman, why = spectra.raman_allowed(scf_res.get("xc"), types, occ)
+    (sd / "raman_allowed.json").write_text(json.dumps({"raman": raman, "reason": why}))
+    if not raman:
+        job.log(f"Raman skipped: {why} IR is still calculated.")
+    scratch = job.scratch / "spectra"
+    scratch.mkdir(parents=True, exist_ok=True)
+    outdir = str(scratch) + "/"
+
+    def sp_scf():
+        t = qein.set_param(text, "control", "calculation", "scf")
+        t = qein.set_param(t, "control", "outdir", outdir)
+        t = qein.set_param(t, "control", "pseudo_dir", "../pseudos/")
+        t = qein.set_param(t, "electrons", "conv_thr", 1e-12)
+        (sd / "scf.in").write_text(t)
+        rc = mgr.run(job, "pw.x", sd / "scf.in", sd / "scf.out", np_, cwd=sd)
+        _check(job, "sp_scf", sd / "scf.out", rc)
+    _timed(job, "sp_scf", sp_scf)
+
+    def sp_ph():
+        (sd / "ph.in").write_text(spectra.ph_gamma_input(prefix, outdir, raman))
+        rc = mgr.run(job, "ph.x", sd / "ph.in", sd / "ph.out", np_, cwd=sd)
+        _check(job, "sp_ph", sd / "ph.out", rc)
+    _timed(job, "sp_ph", sp_ph)
+
+    def dyn():
+        (sd / "dynmat.in").write_text(spectra.dynmat_input(prefix))
+        rc = mgr.run(job, "dynmat.x", sd / "dynmat.in", sd / "dynmat.out", 1, use_mpi=False, cwd=sd)
+        _check(job, "dynmat", sd / "dynmat.out", rc)
+        (sd / "dynmat_lo.in").write_text(spectra.dynmat_input(prefix, [1.0, 0.0, 0.0]))
+        rc = mgr.run(job, "dynmat.x", sd / "dynmat_lo.in", sd / "dynmat_lo.out", 1, use_mpi=False, cwd=sd)
+        _check(job, "dynmat", sd / "dynmat_lo.out", rc, required=False)
+    _timed(job, "dynmat", dyn)
+
+
+# --------------------------------------------------------------------------- UV-Vis
+def run_uvvis(mgr: Manager, job: Job, text: str, prefix: str, opts: dict, np_: int):
+    """SCF + NSCF with many empty bands (symmetry-reduced k-grid), then the dielectric function from the
+    HDF5 wavefunctions (qestudio/optics.py)."""
+    ud = job.dir / "uvvis"
+    ud.mkdir(exist_ok=True)
+    types = sorted({cif.pseudo_kind(p) for p in (job.dir / "pseudos").iterdir() if p.is_file()})
+    if any(t not in ("NC", "SL") for t in types):
+        msg = ("UV-Vis needs norm-conserving pseudopotentials (ultrasoft/PAW need augmentation terms in the optical "
+               "matrix elements). Convert the CIF with 'LDA norm-conserving' or use NC pseudopotentials.")
+        for s_ in ("uv_nscf", "optics"):
+            job.step(s_, status="skipped", error=msg)
+        (ud / "skipped.txt").write_text(msg)
+        return
+    scratch = job.scratch / "uvvis"
+    scratch.mkdir(parents=True, exist_ok=True)
+    outdir = str(scratch) + "/"
+    atoms = qein.read_structure(text)
+    parsed = qein.parse_input(text)
+    noncolin = bool(qein.get(parsed, "system", "noncolin", False))
+    scf_out = qeout.parse_pw((job.dir / "scf.out").read_text(errors="replace"))
+    nelec = scf_out.get("nelec") or 0
+    nocc = int(math.ceil(nelec if noncolin else nelec / 2))
+    nbnd = int(opts.get("uv_nbnd") or (2 * nocc + 8))
+    grid = [int(x) for x in (opts.get("uv_grid") or qein.kgrid_for_density(atoms, 16 if len(atoms) <= 4 else 10))]
+
+    def uv_nscf():
+        t = qein.set_param(text, "control", "calculation", "scf")
+        t = qein.set_param(t, "control", "outdir", outdir)
+        t = qein.set_param(t, "control", "pseudo_dir", "../pseudos/")
+        (ud / "scf.in").write_text(t)
+        rc = mgr.run(job, "pw.x", ud / "scf.in", ud / "scf.out", np_, cwd=ud)
+        _check(job, "uv_nscf", ud / "scf.out", rc)
+        t = qein.set_param(t, "control", "calculation", "nscf")
+        t = qein.set_param(t, "system", "nbnd", nbnd)
+        t = qein.replace_card(t, "K_POINTS", "K_POINTS automatic\n  {} {} {} 0 0 0\n".format(*grid))
+        (ud / "nscf.in").write_text(t)
+        rc = mgr.run(job, "pw.x", ud / "nscf.in", ud / "nscf.out", np_, cwd=ud)
+        _check(job, "uv_nscf", ud / "nscf.out", rc)
+        job.log(f"UV-Vis NSCF: {grid[0]}x{grid[1]}x{grid[2]} k-grid, {nbnd} bands")
+    _timed(job, "uv_nscf", uv_nscf)
+
+    def opt():
+        save = scratch / f"{prefix}.save"
+        if not list(save.glob("wfc*.hdf5")):
+            raise RuntimeError("No HDF5 wavefunctions found (QE must be built with HDF5, as the conda-forge build is).")
+        meta = optics.compute(save, ud, emax_ev=float(opts.get("uv_emax") or 20), sigma_ev=float(opts.get("uv_sigma") or 0.1),
+                              shift_ev=float(opts.get("uv_scissor") or 0))
+        meta.update(grid=grid, pseudo_types=types)
+        (ud / "optics.json").write_text(json.dumps(meta, indent=1))
+        job.log(f"UV-Vis: eps1(0) = {meta['eps_static']:.2f}, f-sum ratio {meta['fsum_ratio']:.2f}")
+    _timed(job, "optics", opt)
+
+
+def analyse_uvvis(d: Path) -> dict | None:
+    ud = d / "uvvis"
+    if (ud / "skipped.txt").exists():
+        return {"skipped": (ud / "skipped.txt").read_text()}
+    if not (ud / "optics.dat").exists():
+        return None
+    data = np.loadtxt(ud / "optics.dat")
+    meta = json.loads((ud / "optics.json").read_text())
+    E, e1, e2, n, k, alpha, R = data.T
+    step = max(1, len(E) // 1500)                          # keep the payload small
+    res = {"meta": meta, "E": E[::step].tolist(), "eps1": e1[::step].tolist(), "eps2": e2[::step].tolist(),
+           "n": n[::step].tolist(), "k": k[::step].tolist(), "alpha": alpha[::step].tolist(), "R": R[::step].tolist()}
+    on = np.nonzero(alpha >= 1e4)[0]
+    if len(on):
+        res["onset_ev"] = float(E[on[0]])
+        res["onset_nm"] = float(optics.HC_EV_NM / E[on[0]])
+    i589 = int(np.argmin(abs(E - optics.HC_EV_NM / 589.0)))
+    res["n_589"] = float(n[i589])
+    res["peak_eps2_ev"] = float(E[int(np.argmax(e2))])
+    return res
+
+
+# --------------------------------------------------------------------------- NMR
+def run_nmr(mgr: Manager, job: Job, text: str, prefix: str, np_: int):
+    """SCF and gipaw.x (job = 'nmr') with the self-built QE-GIPAW, in runs/<id>/nmr/."""
+    nd = job.dir / "nmr"
+    nd.mkdir(exist_ok=True)
+
+    def skip(msg):
+        for s_ in ("nmr_scf", "nmr"):
+            job.step(s_, status="skipped", error=msg)
+        (nd / "skipped.txt").write_text(msg)
+
+    if not nmr.available():
+        return skip("GIPAW is not installed on this computer. Run build_gipaw.sh once in Ubuntu "
+                    "(README, installation step 5; about 30-60 minutes, no admin rights needed), then rerun.")
+    occ = str(qein.get(qein.parse_input(text), "system", "occupations", "fixed")).lower()
+    if occ != "fixed":
+        return skip("NMR shielding (GIPAW job 'nmr') needs an insulator with occupations = 'fixed'.")
+    bad = [f"{p.name} ({why})" for p in sorted((job.dir / "pseudos").iterdir())
+           if p.is_file() for ok, why in [nmr.gipaw_ready(p)] if not ok]
+    if bad:
+        return skip("These pseudopotentials have no usable GIPAW data: " + "; ".join(bad) +
+                    ". Use PSlibrary PAW files (CIF converter: 'PBE PAW, for NMR').")
+    scratch = job.scratch / "nmr"
+    scratch.mkdir(parents=True, exist_ok=True)
+    outdir = str(scratch) + "/"
+
+    def nmr_scf():
+        t = qein.set_param(text, "control", "calculation", "scf")
+        t = qein.set_param(t, "control", "outdir", outdir)
+        t = qein.set_param(t, "control", "pseudo_dir", "../pseudos/")
+        t = qein.set_param(t, "electrons", "conv_thr", 1e-10)
+        (nd / "scf.in").write_text(t)
+        rc = mgr.run(job, "pw.x", nd / "scf.in", nd / "scf.out", np_, cwd=nd, gipaw=True)
+        _check(job, "nmr_scf", nd / "scf.out", rc)
+    _timed(job, "nmr_scf", nmr_scf)
+
+    def gip():
+        (nd / "gipaw.in").write_text(nmr.gipaw_input(prefix, outdir))
+        rc = mgr.run(job, "gipaw.x", nd / "gipaw.in", nd / "gipaw.out", np_, cwd=nd, gipaw=True)
+        _check(job, "nmr", nd / "gipaw.out", rc)
+    _timed(job, "nmr", gip)
 
 
 # --------------------------------------------------------------------------- convergence
@@ -843,7 +1072,9 @@ def analyse_job(job: Job) -> dict:
             summary["fermi_nscf_ev"] = no.get("fermi_ev")
             summary["homo_nscf_ev"] = no.get("homo_ev")
     # best overall gap: smallest over all k-sets
-    gaps = [summary.get(k) for k in ("gap_bands", "gap_nscf", "gap_scf_grid") if summary.get(k)]
+    # only sources that could decide metal/insulator (e.g. the SCF grid has no conduction band when nbnd = nocc)
+    gaps = [summary.get(k) for k in ("gap_bands", "gap_nscf", "gap_scf_grid")
+            if summary.get(k) and summary[k].get("metal") is not None]
     if gaps:
         if any(g.get("metal") for g in gaps):
             summary["is_metal"] = True
@@ -900,9 +1131,38 @@ def analyse_job(job: Job) -> dict:
             res["phonons"] = ph
     except Exception as e:
         res["phonons_error"] = str(e)
+    # NMR
+    nd = d / "nmr"
+    if (nd / "skipped.txt").exists():
+        res["nmr"] = {"skipped": (nd / "skipped.txt").read_text()}
+    elif (nd / "gipaw.out").exists():
+        try:
+            res["nmr"] = nmr.parse_gipaw((nd / "gipaw.out").read_text(errors="replace"))
+        except Exception as e:
+            res["nmr_error"] = str(e)
+    # UV-Vis
+    try:
+        uv = analyse_uvvis(d)
+        if uv is not None:
+            res["uvvis"] = uv
+    except Exception as e:
+        res["uvvis_error"] = str(e)
+    # IR / Raman
+    try:
+        sp = spectra.analyse(d, prefix)
+        if sp is not None:
+            ra = d / "spectra" / "raman_allowed.json"
+            if ra.exists():
+                sp.update(json.loads(ra.read_text()))
+            res["spectra"] = sp
+        elif (d / "spectra" / "skipped.txt").exists():
+            res["spectra"] = {"skipped": (d / "spectra" / "skipped.txt").read_text()}
+    except Exception as e:
+        res["spectra_error"] = str(e)
     # checks
     checks = []
-    for out in sorted(d.glob("*.out")) + sorted(d.glob("conv_*/*/scf.out")) + sorted(d.glob("phonon/*.out")):
+    for out in (sorted(d.glob("*.out")) + sorted(d.glob("conv_*/*/scf.out")) + sorted(d.glob("phonon/*.out"))
+                + sorted(d.glob("spectra/*.out")) + sorted(d.glob("uvvis/*.out")) + sorted(d.glob("nmr/*.out"))):
         txt = out.read_text(errors="replace")
         rel = str(out.relative_to(d))
         if "JOB DONE" not in txt:
@@ -940,6 +1200,25 @@ def analyse_job(job: Job) -> dict:
                 "consider a higher ecutwfc or a denser k-grid for more accurate phonons.")})
         if summary.get("total_force") and summary["total_force"] > 1e-3:
             checks.append({"level": "warn", "msg": "Forces are not zero: phonons should be calculated for a relaxed structure."})
+    sp = res.get("spectra") or {}
+    if sp.get("born_sum") is not None and abs(sp["born_sum"]) > 0.1:
+        checks.append({"level": "info", "msg": (
+            f"Born effective charges sum to {sp['born_sum']:.3f} instead of 0 (acoustic sum rule); the IR intensities apply "
+            "the sum rule, but a higher ecutwfc or denser k-grid would make the raw charges more accurate.")})
+    if sp.get("reason"):
+        checks.append({"level": "info", "msg": f"Raman not calculated: {sp['reason']} IR was calculated."})
+    if sp.get("skipped"):
+        checks.append({"level": "info", "msg": sp["skipped"]})
+    nm = res.get("nmr") or {}
+    if nm.get("skipped"):
+        checks.append({"level": "info", "msg": nm["skipped"]})
+    uv = res.get("uvvis") or {}
+    if uv.get("skipped"):
+        checks.append({"level": "info", "msg": uv["skipped"]})
+    elif uv.get("meta") and uv["meta"].get("fsum_ratio") is not None and uv["meta"]["fsum_ratio"] < 0.8:
+        checks.append({"level": "warn", "msg": (
+            f"UV-Vis f-sum rule only {uv['meta']['fsum_ratio']*100:.0f}% fulfilled: too few empty bands for energies up to "
+            f"{uv['meta']['emax_ev']:.0f} eV. The low-energy part is still fine.")})
     res["checks"] = checks
     res["summary"] = _jsonable(summary)
     tmp = d / "results.json.tmp"
@@ -1007,8 +1286,11 @@ def list_jobs() -> list[dict]:
         r = d / "results.json"
         if r.exists():
             try:
-                s = json.loads(r.read_text()).get("summary", {})
+                full = json.loads(r.read_text())
+                s = full.get("summary", {})
                 item.update(energy_ry=s.get("energy_ry"), gap_ev=s.get("gap_ev"), is_metal=s.get("is_metal"))
+                if (full.get("nmr") or {}).get("mean_sigma"):
+                    item["nmr_sigma"] = full["nmr"]["mean_sigma"]
             except json.JSONDecodeError:
                 pass
         out.append(item)

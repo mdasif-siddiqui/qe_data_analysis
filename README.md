@@ -3,11 +3,17 @@
 **QE Studio** is a local web app for running and analysing [Quantum ESPRESSO](https://www.quantum-espresso.org/)
 calculations on Windows via WSL Ubuntu.
 
-Give it a pw.x `scf.in` and it validates the input, runs SCF → band structure → DOS/PDOS (plus optional
-phonons and cutoff/k-point convergence tests), and shows the results interactively: band gap (direct/indirect, VBM/CBM
-location), band structure with DOS, projected DOS, phonon dispersion and DOS, heat capacity and other harmonic
-thermodynamics, SCF convergence, convergence-test recommendations and Löwdin charges. It can also analyse existing
-output files.
+Give it a pw.x `scf.in` (or a `.cif` file, which it converts) and it validates the input, runs SCF → band structure →
+DOS/PDOS, plus optional phonons, IR and Raman spectra, UV-Vis absorption, NMR shielding and cutoff/k-point convergence
+tests. It shows
+the results interactively:
+- **Electronic:** band gap (direct/indirect, VBM/CBM location), band structure with DOS, projected DOS, Löwdin charges.
+- **Vibrational:** phonon dispersion and DOS, heat capacity and other harmonic thermodynamics, IR and Raman spectra.
+- **Optical:** dielectric function, absorption coefficient, refractive index.
+- **NMR:** shielding tensors and chemical shifts for every atom.
+- **Quality:** SCF convergence and convergence-test recommendations.
+
+It can also analyse existing output files.
 
 ## Installation (Windows 10/11)
 
@@ -36,13 +42,24 @@ Without Git, use **Code → Download ZIP** on GitHub and unzip it.
 
 **4. Test it.** Click **Load silicon example**, then **Run calculation**. You should get a band gap of about 0.50 eV (indirect).
 
+**5. Optional, only for NMR:** in Ubuntu, run once:
+
+```bash
+bash /mnt/c/Users/<your-name>/qe_data_analysis/qe_studio/build_gipaw.sh
+```
+
+(The project folder on the Windows drive is under `/mnt/c/...` inside Ubuntu.)
+
+This compiles QE-GIPAW (`gipaw.x`, not available in conda-forge) into `~/gipaw`, in its own conda environment.
+It needs no admin rights, takes about 30–60 minutes and about 2 GB of disk. Restart QE Studio afterwards.
+
 ## Daily use
 
 After the first start, nothing is installed again:
 
 1. **Double-click `qe_studio\Start QE Studio.bat`.** The server starts in a few seconds and the browser opens
    http://localhost:8050 by itself. If the page says it can't connect, wait 2–3 seconds and refresh.
-2. **Use your own input.** Drop your `scf.in` (and any `.UPF` files) into the page, choose what to calculate and click
+2. **Use your own input.** Drop your `scf.in` or a `.cif` file (and any `.UPF` files) into the page, choose what to calculate and click
    **Run calculation**. The built-in examples are only for checking the installation.
 3. **Look at old results anytime.** The **Runs** tab lists every calculation, saved in `qe_studio\runs\`.
 4. **When you're done, close the console window.** That stops the app. Don't close it while a calculation is
@@ -78,6 +95,7 @@ Start with `git pull` (or download the ZIP again): the start scripts fix several
 | `$'\r': command not found` | The `.sh` files got Windows line endings (copied or edited in Windows). `Start QE Studio.bat` now fixes this on every start. By hand: `sed -i 's/\r$//' qe_studio/*.sh` in Ubuntu. |
 | `ERROR: curl is missing` | In Ubuntu, run `sudo apt update && sudo apt install -y curl`, then start again. |
 | `Setup failed` | Usually no internet during the first start. Check the connection and start again; setup continues where it stopped. |
+| NMR option greyed out | GIPAW isn't built on this PC: run `build_gipaw.sh` once in Ubuntu (installation step 5), then restart QE Studio. If it fails, read `~/gipaw/*.log`. |
 | Browser says it can't connect | Wait 2–3 seconds and refresh. If it persists, read the messages in the console window. |
 | `Address already in use` | QE Studio is already running in another window; use that one or close it first. |
 
@@ -103,6 +121,33 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
   - **Cost:** much slower than bands/DOS. Silicon with a 4×4×4 q-grid takes about 20 minutes on 4 cores; for bigger
     cells start with 2×2×2.
 
+- **CIF → scf.in:** drop a `.cif` file (or paste one into the editor).
+  - **Structure:** reduced to the primitive cell, with the space group detected (spglib).
+  - **Pseudopotentials:** chosen and downloaded from the QE library, either **PBE** (ultrasoft/PAW, PSlibrary) or
+    **LDA norm-conserving** (needed for Raman and UV-Vis). Cutoffs come from the pseudopotentials' own recommendations.
+  - **k-grid** from a target spacing (default 0.25 Å⁻¹), with fixed occupations or smearing.
+  - **Editing:** the generated input appears in the editor to adjust, and **Save scf.in** downloads it.
+- **IR & Raman spectra** (tick **IR & Raman**): `ph.x` at Γ with the dielectric tensor and Born effective charges
+  (`epsil`), Raman tensors (`lraman`), then `dynmat.x`.
+  - **Shown:** ε∞, Born charges, TO and LO frequencies (LO–TO splitting), IR intensities (km/mol) and Raman activities
+    (Å⁴/amu) per mode, IR-/Raman-active/silent labels, and broadened spectra. Raman can be shown as intensities for a
+    532 nm laser at 300 K.
+  - **Cost:** GaAs takes about 5 minutes.
+- **UV-Vis absorption** (tick **UV-Vis**): an NSCF with many empty bands, then the dielectric function computed
+  directly from QE's wavefunctions.
+  - **Shown:** ε₁ and ε₂, the absorption coefficient against wavelength (UV and visible ranges), refractive index and
+    extinction n and k, reflectivity, the absorption onset, and n at 589 nm.
+  - **Scissor shift:** optional, corrects the too-small LDA/GGA gap.
+  - **Quality check:** the f-sum rule is reported as a measure of whether enough empty bands were included.
+
+- **NMR shielding** (tick **NMR**; needs the one-time GIPAW build, installation step 5): `pw.x` and `gipaw.x`.
+  - **Shown:** isotropic shielding σ, anisotropy, asymmetry η and principal components for every atom, and a simulated
+    spectrum per nucleus.
+  - **Chemical shifts** use δ = σ_ref − σ. Set σ_ref per element directly, or take it from a reference run plus its
+    measured shift (e.g. diamond ¹³C = 35.0 ppm). The app remembers it.
+  - **Pseudopotentials:** use **PBE PAW** in the CIF converter. PSlibrary PAW files carry the GIPAW reconstruction data.
+  - **Cost:** diamond and SiC take about 1 minute each.
+
 The **Analyse outputs** tab reads existing pw.x, ph.x, dos.x and projwfc.x outputs, matdyn.x `.freq` files
 (dispersion) and phonon DOS files (DOS plus thermodynamics) of any material.
 
@@ -120,12 +165,36 @@ The **Analyse outputs** tab reads existing pw.x, ph.x, dos.x and projwfc.x outpu
 - **Spin-orbit / non-collinear** (`noncolin`, `lspinorb`): basic support only, the least tested part.
 - **Large systems:** on a 4-core laptop, more than about 20–30 atoms or high cutoffs take from many minutes to hours.
 - **Phonons:**
-  - **Physics not included:** no LO–TO splitting (dielectric constant and Born charges are not calculated), so optical
-    modes at Γ of polar materials (e.g. GaAs, NaCl) are not fully correct. No anharmonic effects or thermal expansion.
+  - **Physics not included:** the phonon dispersion has no LO–TO splitting, so optical branches near Γ of polar
+    materials (e.g. GaAs, NaCl) are not fully correct; the **IR & Raman** option does give the LO and TO frequencies
+    at Γ. No anharmonic effects or thermal expansion.
   - **Inputs:** phonons need a relaxed structure (zero forces) and tight convergence; the app runs its own SCF with
     `conv_thr` ≤ 1e-12.
   - **Testing:** only silicon has been tested with phonons so far.
+- **IR & Raman:**
+  - **Insulators only** (`occupations = 'fixed'`).
+  - **Raman** also needs LDA with norm-conserving pseudopotentials (a ph.x restriction); otherwise only IR is calculated.
+  - **Spectra:** harmonic, at Γ only, with no two-phonon or anharmonic features.
+  - **Testing:** done with GaAs (TO 258 / LO 274 cm⁻¹ in LDA vs 268 / 292 measured).
+- **UV-Vis:**
+  - **Approximation:** independent-particle, so no excitons and no local-field effects.
+  - **Accuracy:** the nonlocal-pseudopotential commutator is left out, which overestimates ε by about 10–20% (silicon:
+    ε∞ = 16.2 vs about 14 in full LDA calculations, 11.7 measured).
+  - **Band gaps:** LDA/GGA red-shift the absorption edge; use the scissor shift.
+  - **Requirements:** norm-conserving pseudopotentials and QE's HDF5 wavefunctions (the conda-forge build has them).
+  - **Why not epsilon.x:** QE's own `epsilon.x` is not used; in this build it gives k-grid-dependent spectra that are
+    several times too large.
+- **NMR:**
+  - **Insulators only** (`occupations = 'fixed'`). Knight shifts of metals are not calculated.
+  - **Pseudopotentials:** they must carry GIPAW data. PSlibrary **PAW** files work. PSlibrary ultrasoft files contain
+    GIPAW sections with zero radii that `gipaw.x` rejects, and norm-conserving `pz-vbc`/`bhs` files have none; the app
+    checks this and explains.
+  - **Accuracy:** chemical shifts are only as good as the reference. Use a reference computed with the same
+    pseudopotentials, cutoff and k-grid. Tested: 3C-SiC ¹³C δ = 20.2 ppm with diamond as reference, vs 18.4 measured.
+  - **Build patches:** `build_gipaw.sh` fixes three malformed Fortran format strings in QE-GIPAW 7.6 that make recent
+    gfortran stop at the end of a run.
 - **Other QE programs** (`cp.x`, `neb.x`, `pp.x`, …) are not supported.
 - **`ATOMIC_POSITIONS crystal_sg`** is not supported by the structure viewer.
+- **Spin-polarised or non-collinear** UV-Vis, and NMR of magnetic systems, are untested.
 
 See [qe_studio/README.md](qe_studio/README.md) for how the app works.

@@ -1,3 +1,4 @@
+[hidden] { display: none !important; }
 :root {
   color-scheme: light;
   --page: #f9f9f7; --surface-1: #fcfcfb; --card: #ffffff;
@@ -110,3 +111,8 @@ body.public .local-only { display: none !important; }
 #public-note { margin-bottom: 16px; }
 @media (max-width: 760px) { .brand .sub { display: none; } .top { gap: 12px; padding: 10px 14px; } }
 select { font: inherit; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-1); color: var(--text-primary); }
+.cif-panel { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 10px; background: var(--wash); }
+.cif-opts { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 8px 0; font-size: 13px; }
+.cif-opts .chk { font-weight: 400; }
+.nmr-ref { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--grid); font-size: 13px; }
+code { font: 12px ui-monospace, Consolas, monospace; background: var(--wash); padding: 1px 4px; border-radius: 4px; }
