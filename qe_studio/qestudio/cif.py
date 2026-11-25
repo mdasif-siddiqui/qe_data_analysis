@@ -71,6 +71,53 @@ def pseudo_kind(path) -> str:
     return "NC"
 
 
+def _formula_counts(text: str) -> dict:
+    return {el: float(n) if n else 1.0 for el, n in re.findall(r"([A-Z][a-z]?)\s*([\d.]*)", text)}
+
+
+def _cif_checks(cif_text: str, atoms) -> list[str]:
+    """Sanity checks on the structure built from the CIF (catches wrong symmetry/origin, overlaps, disorder)."""
+    out: list[str] = []
+    try:
+        from ase.io.cif import parse_cif
+        block = next(iter(parse_cif(io.StringIO(cif_text))))
+    except Exception:
+        block = None
+    if block is not None:
+        occ = block.get("_atom_site_occupancy")
+        if occ is not None:
+            vals = []
+            for v in occ:
+                try:
+                    vals.append(float(str(v).split("(")[0]))
+                except ValueError:
+                    pass
+            if any(v < 0.999 for v in vals):
+                out.append("The CIF lists partial site occupancies (disorder). Each site is treated as fully occupied; "
+                           "an ordered supercell is needed for a realistic calculation.")
+        fsum = block.get("_chemical_formula_sum")
+        if fsum:
+            want = _formula_counts(str(fsum))
+            have = _formula_counts(atoms.get_chemical_formula(mode="hill"))
+            if want and set(want) == set(have):
+                ref = next(iter(want))
+                rw = {k: v / want[ref] for k, v in want.items()}
+                rh = {k: v / have[ref] for k, v in have.items()}
+                if any(abs(rw[k] - rh[k]) > 0.02 * max(1.0, rw[k]) for k in want):
+                    out.append(f"The structure built from the CIF has composition {atoms.get_chemical_formula(mode='hill')}, "
+                               f"but the CIF says {fsum}. Sites were doubled or lost: the coordinates probably do not match "
+                               "the symmetry operations (origin choice). Check the CIF before running.")
+            elif want:
+                out.append(f"The CIF formula ({fsum}) has different elements than the structure built from it.")
+    if len(atoms) > 1:
+        d = atoms.get_all_distances(mic=True)
+        np.fill_diagonal(d, np.inf)
+        if d.min() < 0.7:
+            out.append(f"Two atoms are only {d.min():.2f} Å apart: overlapping sites, usually from duplicated positions "
+                       "or a wrong symmetry setting.")
+    return out
+
+
 def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, occupations: str = "smearing",
                kspacing: float = 0.25, prefix: str | None = None, download: bool = True) -> dict:
     """Returns {"text": scf input, "info": {...}, "warnings": [...]}."""
@@ -79,17 +126,13 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
     warnings: list[str] = []
     if functional not in CANDIDATES:
         raise ValueError(f"Unknown functional {functional!r}")
-    if re.search(r"_atom_site_occupancy", cif_text):
-        occ = re.findall(r"\b0\.\d+\b", cif_text.split("_atom_site_occupancy", 1)[1][:4000])
-        if occ:
-            warnings.append("The CIF lists partial site occupancies (disorder). Each site is treated as fully occupied; "
-                            "an ordered supercell is needed for a realistic calculation.")
     try:
         atoms = read(io.StringIO(cif_text), format="cif")
     except Exception as e:
         raise ValueError(f"Could not read the CIF file: {e}")
     if isinstance(atoms, list):
         atoms = atoms[0]
+    warnings += _cif_checks(cif_text, atoms)
     info: dict = {"formula_cif": atoms.get_chemical_formula(mode="hill"), "natoms_cif": len(atoms)}
     try:
         import spglib
