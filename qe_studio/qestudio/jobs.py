@@ -681,7 +681,14 @@ def run_phonons(mgr: Manager, job: Job, text: str, prefix: str, opts: dict, np_:
         rc = mgr.run(job, "matdyn.x", pd / "matdyn.in", pd / "matdyn.out", 1, use_mpi=False, cwd=pd)
         _check(job, "matdyn", pd / "matdyn.out", rc)
         grid = qein.kgrid_for_density(atoms, 24 if len(atoms) <= 8 else 16)
-        (pd / "matdyn_dos.in").write_text(phonon.matdyn_dos_input(prefix, grid))
+        # broadening scaled to the frequency range: a fixed 3 cm^-1 is fine for Si (520 cm^-1) but leaves the
+        # DOS of stiff materials (diamond, 1350 cm^-1) spiky on the same mesh
+        try:
+            wmax = float(np.max(phonon.parse_freq(pd / f"{prefix}.freq")["freq"]))
+        except Exception:
+            wmax = 0.0
+        degauss = round(max(3.0, wmax / 150), 1)
+        (pd / "matdyn_dos.in").write_text(phonon.matdyn_dos_input(prefix, grid, degauss_cm=degauss))
         rc = mgr.run(job, "matdyn.x", pd / "matdyn_dos.in", pd / "matdyn_dos.out", 1, use_mpi=False, cwd=pd)
         _check(job, "matdyn", pd / "matdyn_dos.out", rc)
         mesh = qein.kgrid_for_density(atoms, 16 if len(atoms) <= 8 else 8)

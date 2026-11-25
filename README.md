@@ -126,8 +126,10 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
   - **Dispersion** along the same path as the bands, with the phonon DOS beside it (per element), in cm⁻¹, THz or meV.
   - **Stability check:** warns about imaginary frequencies and large acoustic-sum-rule corrections.
   - **Frequencies at Γ** in a table, before and after the acoustic sum rule.
-  - **Harmonic thermodynamics** from the phonon DOS: zero-point energy, heat capacity C_v(T), entropy, free and internal
-    energy from 0 to 1000 K, per mole of atoms.
+  - **Harmonic thermodynamics** summed over the phonon modes on a dense q-mesh: zero-point energy, heat capacity
+    C_v(T), entropy, free and internal energy from 0 to 1000 K, per mole of atoms.
+  - **Phonon DOS** broadening scales with the highest frequency (3 cm⁻¹ for silicon, 9 cm⁻¹ for diamond), so stiff
+    materials do not get a spiky DOS.
   - **Cost:** much slower than bands/DOS. Silicon with a 4×4×4 q-grid takes about 20 minutes on 4 cores; for bigger
     cells start with 2×2×2.
 
@@ -251,10 +253,39 @@ about 3 minutes on 4 cores.
 - **Plot fix:** the absorption plot's wavelength range now follows the onset (diamond: 100–900 nm instead of a
   fixed 150–1500 nm, where its UV absorption was a thin sliver).
 
+## Test: phonons of diamond from a CIF
+
+The same [diamond CIF](qe_studio/examples/C_diamond.cif) (LDA norm-conserving, 100 Ry, k-grid 13×13×13) was first
+relaxed by hand with `vc-relax` (a = 3.524 Å, 1.2% below the measured 3.567 Å, typical for LDA), then run with
+**Phonons** ticked and the default 4×4×4 q-grid. Diamond is non-polar, so the missing LO–TO splitting in the
+dispersion does not matter. Run time: about 35 minutes on 4 cores (ph.x 31 min for 8 q-points).
+
+| Frequencies (cm⁻¹) | QE Studio | Measured |
+|---|---|---|
+| Γ optical (Raman line) | 1335.3 | 1332 |
+| X: TA / TO / LA = LO | 795.5 / 1105.9 / 1229.3 | 807 / 1072 / 1185 |
+| L: TA / LA / TO / LO | 555.8 / 1083.8 / 1241.4 / 1275.4 | 552 / 1035 / 1210 / 1242 |
+| Highest frequency (overbending, away from Γ) | 1355 | seen in experiment |
+| Phonon DOS main peak | 1250 | ≈ 1250 |
+
+| Thermodynamics | QE Studio | Measured / literature |
+|---|---|---|
+| C_v at 300 K | 6.02 J/(mol·K) | ≈ 6.1 |
+| S at 300 K | 2.32 J/(mol·K) | 2.38 |
+| Zero-point energy | 185 meV/atom | ≈ 180 |
+| C_v at 1000 K | 20.9 J/(mol·K) | ≈ 21.3 |
+
+- **Accuracy:** Γ within 0.2% and acoustic modes within 1.5%; optical modes at X and L 3–5% high, which is in the
+  usual range for LDA with the old `C.pz-vbc` pseudopotential. Stable (no imaginary frequencies); the acoustic modes
+  at Γ were 16 cm⁻¹ before the acoustic sum rule, which the app applies.
+- **Fix from this test:** the phonon DOS used a fixed 3 cm⁻¹ broadening, made for silicon (up to 520 cm⁻¹). On the
+  same q-mesh diamond's DOS (up to 1355 cm⁻¹) was very spiky. The broadening is now (highest frequency)/150, at
+  least 3 cm⁻¹: 15 times smoother for diamond at the same cost, silicon essentially unchanged.
+
 ## Limitations
 
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. α-quartz (NMR), wurtzite AlN (IR & Raman) and diamond (UV-Vis) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
+  examples. α-quartz (NMR), wurtzite AlN (IR & Raman) and diamond (UV-Vis, phonons) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
   and for GaAs with `ibrav = 0`. Magnetic systems
   and other materials should work but are not yet tested; check the first results critically.
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
@@ -271,7 +302,9 @@ about 3 minutes on 4 cores.
     at Γ. No anharmonic effects or thermal expansion.
   - **Inputs:** phonons need a relaxed structure (zero forces) and tight convergence; the app runs its own SCF with
     `conv_thr` ≤ 1e-12.
-  - **Testing:** only silicon has been tested with phonons so far.
+  - **No automatic relaxation:** relax the structure yourself (`vc-relax`, same pseudopotentials and cutoff) and run
+    phonons on the relaxed structure.
+  - **Testing:** silicon and diamond (from a CIF, see above).
 - **IR & Raman:**
   - **Insulators only** (`occupations = 'fixed'`).
   - **Raman** also needs LDA with norm-conserving pseudopotentials (a ph.x restriction); otherwise only IR is calculated.
