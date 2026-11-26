@@ -182,7 +182,8 @@ def convert_cif():
         r = cif.cif_to_scf(text, functional=request.form.get("functional", "pbe"),
                            primitive=request.form.get("primitive", "1") == "1",
                            occupations=request.form.get("occupations", "smearing"),
-                           kspacing=float(request.form.get("kspacing") or 0.25))
+                           kspacing=float(request.form.get("kspacing") or 0.25),
+                           spin=request.form.get("spin", "auto"))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify(jobs._jsonable(r))

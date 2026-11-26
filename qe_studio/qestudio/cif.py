@@ -161,8 +161,13 @@ def _cif_checks(cif_text: str, atoms) -> list[str]:
     return out
 
 
+# Elements whose compounds are often magnetic (open 3d / 4f shells). "auto" spin polarisation starts these
+# ferromagnetically; non-magnetic compounds of them (e.g. low-spin Fe2+) simply converge to zero moment.
+MAGNETIC = {"Cr", "Mn", "Fe", "Co", "Ni", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb"}
+
+
 def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, occupations: str = "smearing",
-               kspacing: float = 0.25, prefix: str | None = None, download: bool = True) -> dict:
+               kspacing: float = 0.25, prefix: str | None = None, download: bool = True, spin: str = "auto") -> dict:
     """Returns {"text": scf input, "info": {...}, "warnings": [...]}."""
     from ase.io import read
     from ase import Atoms
@@ -253,6 +258,20 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
              f"  nat = {len(atoms)}", f"  ntyp = {len(elements)}", f"  ecutwfc = {ecutwfc:g}", f"  ecutrho = {ecutrho:g}"]
     if occupations == "smearing":
         lines += ["  occupations = 'smearing'", "  smearing = 'mv'", "  degauss = 0.01"]
+    mag = [el for el in elements if el in MAGNETIC]
+    polarised = spin == "on" or (spin == "auto" and bool(mag))
+    info["spin"] = "spin-polarised (ferromagnetic start)" if polarised else "non-magnetic"
+    if polarised:
+        lines.append("  nspin = 2")
+        for i, el in enumerate(elements, 1):
+            if el in MAGNETIC or spin == "on":
+                lines.append(f"  starting_magnetization({i}) = {0.5 if el in MAGNETIC else 0.1}")
+        warnings.append(f"Spin-polarised with a ferromagnetic start on {', '.join(mag) or 'all atoms'}. Antiferromagnetic or "
+                        "other orders need a supercell with separate species for spin-up and spin-down sites.")
+        if occupations != "smearing":
+            lines.append("  tot_magnetization = 0")
+            warnings.append("Fixed occupations with nspin = 2 need a fixed total moment: tot_magnetization = 0 was set "
+                            "(non-magnetic result). For a magnet, choose 'metal / unknown (smearing)'.")
     lines += ["/", "&ELECTRONS", "  conv_thr = 1.0d-9", "  mixing_beta = 0.5", "/", "ATOMIC_SPECIES"]
     for el in elements:
         mass = atomic_masses[atomic_numbers[el]]

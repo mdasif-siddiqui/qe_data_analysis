@@ -270,6 +270,7 @@ async function convertCif() {
   fd.append("occupations", $("#cif-occ").value);
   fd.append("kspacing", $("#cif-ksp").value);
   fd.append("primitive", $("#cif-prim").checked ? "1" : "0");
+  fd.append("spin", $("#cif-spin").value);
   $("#cif-info").textContent = "Converting… (finding pseudopotentials can take a few seconds)";
   $("#cif-msgs").innerHTML = "";
   let r;
@@ -277,7 +278,7 @@ async function convertCif() {
   catch (e) { $("#cif-info").textContent = ""; $("#cif-msgs").innerHTML = `<div class="msg error"><span class="ic">✕</span><span>${esc(e.message)}</span></div>`; return; }
   const i = r.info;
   $("#cif-info").innerHTML = `${esc(i.formula)} · ${i.natoms} atoms${i.natoms !== i.natoms_cif ? ` (reduced from ${i.natoms_cif})` : ""}` +
-    `${i.spacegroup ? ` · space group ${esc(i.spacegroup)}` : ""} · ecutwfc ${i.ecutwfc} / ecutrho ${i.ecutrho} Ry · k-grid ${i.kgrid.join("×")}<br>` +
+    `${i.spacegroup ? ` · space group ${esc(i.spacegroup)}` : ""} · ecutwfc ${i.ecutwfc} / ecutrho ${i.ecutrho} Ry · k-grid ${i.kgrid.join("×")}${i.spin ? ` · ${esc(i.spin)}` : ""}<br>` +
     Object.entries(i.pseudos).map(([el, n]) => `${esc(el)}: ${n ? esc(n) : "<b>none found</b>"}`).join(" · ");
   $("#cif-msgs").innerHTML = r.warnings.map((m) => `<div class="msg warn"><span class="ic">!</span><span>${esc(m)}</span></div>`).join("");
   editor.value = r.text;
@@ -293,7 +294,7 @@ function startCif(name, text) {
   convertCif();
 }
 $("#cif-go").addEventListener("click", convertCif);
-["#cif-func", "#cif-occ", "#cif-prim"].forEach((s) => $(s).addEventListener("change", convertCif));
+["#cif-func", "#cif-occ", "#cif-prim", "#cif-spin"].forEach((s) => $(s).addEventListener("change", convertCif));
 $("#cif-save").addEventListener("click", () => {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([editor.value], { type: "text/plain" }));

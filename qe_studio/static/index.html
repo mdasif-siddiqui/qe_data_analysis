@@ -43,6 +43,10 @@
           <label>Material <select id="cif-occ">
             <option value="smearing">metal / unknown (smearing)</option>
             <option value="fixed">insulator / semiconductor (fixed)</option></select></label>
+          <label>Spin <select id="cif-spin">
+            <option value="auto">auto (magnetic elements → ferromagnetic)</option>
+            <option value="on">spin-polarised (nspin = 2)</option>
+            <option value="off">non-magnetic</option></select></label>
           <label>k-spacing <input id="cif-ksp" type="number" value="0.25" step="0.05" min="0.05" style="width:70px"> Å⁻¹</label>
           <label class="chk"><input type="checkbox" id="cif-prim" checked> primitive cell</label>
           <button id="cif-go">Convert</button>

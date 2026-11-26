@@ -157,6 +157,9 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
   - **Sanity checks:** warns when the built structure does not match the CIF's `_chemical_formula_sum` or its
     `_cell_formula_units_Z` atom count (usually coordinates given for a different origin than the symmetry
     operations), when atoms overlap (< 0.7 Å), and when sites are partially occupied (disorder).
+  - **Spin:** *auto* (default) makes the input spin-polarised (`nspin = 2`, ferromagnetic start) when it contains a
+    typically magnetic element (Cr, Mn, Fe, Co, Ni, 4f rare earths); *on* / *off* force it. Antiferromagnetic orders
+    need a supercell with separate species for up and down sites (not generated automatically).
 - **IR & Raman spectra** (tick **IR & Raman**): `ph.x` at Γ with the dielectric tensor and Born effective charges
   (`epsil`), Raman tensors (`lraman`), then `dynmat.x`.
   - **Shown:** ε∞, Born charges, TO and LO frequencies (LO–TO splitting), IR intensities (km/mol) and Raman activities
@@ -293,6 +296,26 @@ about 3 minutes on 4 cores.
 - **Plot fix:** the absorption plot's wavelength range now follows the onset (diamond: 100–900 nm instead of a
   fixed 150–1500 nm, where its UV absorption was a thin sliver).
 
+## Test: magnetic bcc iron from a CIF
+
+[qe_studio/examples/Fe_bcc.cif](qe_studio/examples/Fe_bcc.cif) (Im-3m, a = 2.8665 Å) was converted with **PBE**
+(`Fe.pbe-spn-rrkjus_psl`, 75 / 600 Ry, k-grid 13×13×13), **smearing** and **Spin: auto**, then run with **relax
+first: vc-relax**, bands and DOS (about 4.5 minutes on 4 cores).
+
+| | QE Studio | Reference |
+|---|---|---|
+| Magnetic moment | 2.18 μB/atom (absolute 2.32) | 2.22 μB measured |
+| Lattice constant (relaxed, conventional cell) | 2.821 Å | ≈ 2.83 Å typical PBE; 2.8665 Å measured |
+| d-band exchange splitting (d-band centres) | 2.21 eV | ≈ 2 eV usually quoted |
+| DOS at E_F, spin up / down | 0.84 / 0.21 states/eV | majority much larger than minority |
+
+- **Fix from this test:** the CIF converter never wrote `nspin`, so iron came out as a non-magnetic input. It now has
+  the **Spin** option above. Non-magnetic CIFs (AlN, LiF) still convert without spin polarisation.
+- **Shown in the app:** the Magnetisation tile, bands split into spin up and spin down, spin-resolved total and
+  projected DOS (↓ drawn below the axis), and the relaxation note (pressure −77.9 → −4.8 kbar).
+- **Note:** about −5 kbar remains after the relaxation because the final SCF of a vc-relax rebuilds the plane-wave
+  basis for the new cell; a higher cutoff reduces this.
+
 ## Test: UV-Vis of aluminium (metal) from a CIF
 
 [qe_studio/examples/Al.cif](qe_studio/examples/Al.cif) (fcc, a = 4.0495 Å) was converted with **LDA norm-conserving**
@@ -371,8 +394,8 @@ energies agree to all digits with the SCF runs made by hand for the IR & Raman t
 ## Limitations
 
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman, convergence tests) and diamond (UV-Vis, phonons) and aluminium (UV-Vis of a metal) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
-  and for GaAs with `ibrav = 0`. Magnetic systems
+  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman, convergence tests) and diamond (UV-Vis, phonons), aluminium (UV-Vis of a metal) and bcc iron (ferromagnet) were run end to end from CIFs
+  (see above). Input reading was also checked for a hexagonal 2D slab and for GaAs with `ibrav = 0`. Antiferromagnets
   and other materials should work but are not yet tested; check the first results critically.
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
   that E_F moves by +130 meV on the denser NSCF grid and that the convergence tests did not converge.
