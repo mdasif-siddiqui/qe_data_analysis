@@ -484,7 +484,8 @@ def _hint(text: str) -> str:
         ("buffer overflow", "this is the broken apt QE 6.7 – make sure the conda QE is used."),
         ("not enough slots", "lower the number of MPI processes."),
         ("cholesky", "diagonalization problem: try diagonalization='cg' or a different mixing_beta."),
-        ("S matrix not positive definite", "atoms may be too close: check positions / cell."),
+        ("S matrix not positive definite", "in pw.x: atoms may be too close (check positions / cell); in gipaw.x: "
+                                           "try diagonalization = 'cg' (QE Studio retries with it automatically)."),
         ("too many bands are not converged", "try diagonalization='cg' or a larger ecutwfc."),
     ]
     for key, h in rules:
@@ -1055,6 +1056,14 @@ def run_nmr(mgr: Manager, job: Job, text: str, prefix: str, np_: int):
     def gip():
         (nd / "gipaw.in").write_text(nmr.gipaw_input(prefix, outdir))
         rc = mgr.run(job, "gipaw.x", nd / "gipaw.in", nd / "gipaw.out", np_, cwd=nd, gipaw=True)
+        out = (nd / "gipaw.out").read_text(errors="replace") if (nd / "gipaw.out").exists() else ""
+        if "JOB DONE" not in out and "S matrix not positive definite" in out:
+            # Davidson's subspace rotation at k+q breaks down for some PAW sets with semicore states
+            # (NaF with Na.pbe-spn-kjpaw); conjugate gradients works, several times slower
+            job.log("gipaw.x: 'S matrix not positive definite' with Davidson; retrying with diagonalization = 'cg'")
+            (nd / "gipaw_david.out").write_text(out)
+            (nd / "gipaw.in").write_text(nmr.gipaw_input(prefix, outdir, diagonalization="cg"))
+            rc = mgr.run(job, "gipaw.x", nd / "gipaw.in", nd / "gipaw.out", np_, cwd=nd, gipaw=True)
         _check(job, "nmr", nd / "gipaw.out", rc)
     _timed(job, "nmr", gip)
 

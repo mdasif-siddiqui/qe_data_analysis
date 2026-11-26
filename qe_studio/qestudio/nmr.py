@@ -40,9 +40,10 @@ def gipaw_ready(path: Path) -> tuple[bool, str]:
     return False, "GIPAW data present but with zero cutoff radii (PSlibrary ultrasoft files) - use the PAW version"
 
 
-def gipaw_input(prefix: str, tmp_dir: str) -> str:
+def gipaw_input(prefix: str, tmp_dir: str, diagonalization: str | None = None) -> str:
+    diag = f"  diagonalization = '{diagonalization}'\n" if diagonalization else ""
     return (f"&INPUTGIPAW\n  job = 'nmr'\n  prefix = '{prefix}'\n  tmp_dir = '{tmp_dir}'\n  q_gipaw = 0.01\n"
-            f"  spline_ps = .true.\n  use_nmr_macroscopic_shape = .true.\n/\n")
+            f"  spline_ps = .true.\n  use_nmr_macroscopic_shape = .true.\n{diag}/\n")
 
 
 def parse_gipaw(text: str) -> dict:

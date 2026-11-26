@@ -13,13 +13,18 @@ from . import pseudos
 
 # Pseudopotential file names tried in order on the QE library, per functional.
 # "lda-nc" (norm-conserving LDA) is what Raman (ph.x lraman) and UV-Vis (epsilon.x) need.
+# PSlibrary valence tags (which semicore states are included; "l" = nonlinear core correction). Elements use
+# different ones: Li/Be "s"/"sl", Mg "spnl", most p-block "n", transition metals "spn"/"dn" ... "" = H, He.
+PSL_TAGS = ["n", "dn", "spn", "spdn", "s", "sl", "nl", "dnl", "spnl", "spdnl", "sp", "spl", ""]
+
+
+def _psl(kind: str) -> list[str]:
+    return [f"{{el}}.pbe-{t + '-' if t else ''}{kind}_psl.1.0.0.UPF" for t in PSL_TAGS]
+
+
 CANDIDATES = {
-    "pbe": ["{el}.pbe-n-rrkjus_psl.1.0.0.UPF", "{el}.pbe-dn-rrkjus_psl.1.0.0.UPF", "{el}.pbe-spn-rrkjus_psl.1.0.0.UPF",
-            "{el}.pbe-spdn-rrkjus_psl.1.0.0.UPF", "{el}.pbe-n-kjpaw_psl.1.0.0.UPF", "{el}.pbe-dn-kjpaw_psl.1.0.0.UPF",
-            "{el}.pbe-spn-kjpaw_psl.1.0.0.UPF", "{el}.pbe-spdn-kjpaw_psl.1.0.0.UPF",
-            "{el}.pbe-rrkjus_psl.1.0.0.UPF", "{el}.pbe-kjpaw_psl.1.0.0.UPF", "{el}.pbe-rrkjus.UPF"],  # H, He: no valence tag
-    "pbe-paw": ["{el}.pbe-n-kjpaw_psl.1.0.0.UPF", "{el}.pbe-dn-kjpaw_psl.1.0.0.UPF", "{el}.pbe-spn-kjpaw_psl.1.0.0.UPF",
-                "{el}.pbe-spdn-kjpaw_psl.1.0.0.UPF", "{el}.pbe-kjpaw_psl.1.0.0.UPF", "{el}.pbe-nl-kjpaw_psl.1.0.0.UPF"],
+    "pbe": _psl("rrkjus") + _psl("kjpaw") + ["{el}.pbe-rrkjus.UPF"],
+    "pbe-paw": _psl("kjpaw"),
     "lda-nc": ["{el}.pz-vbc.UPF", "{el}.pz-bhs.UPF", "{el}.pz-mt.UPF", "{el}.pz-n-vbc.UPF", "{el}.pz-hgh.UPF"],
 }
 FUNCTIONALS = {"pbe": "PBE (ultrasoft/PAW, PSlibrary)", "pbe-paw": "PBE PAW (PSlibrary; GIPAW-ready for NMR)", "lda-nc": "LDA, norm-conserving (needed for Raman and UV-Vis)"}

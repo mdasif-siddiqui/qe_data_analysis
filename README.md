@@ -202,6 +202,30 @@ structure**, **DOS** and **NMR** ticked.
 - **Lesson from the test:** the first version of this CIF had coordinates for another origin than its symmetry
   operations, and ASE silently built a wrong Si₆O₆ cell. The converter now catches this with the composition check.
 
+## Test: ¹⁹F NMR of LiF and NaF from CIFs
+
+[LiF.cif](qe_studio/examples/LiF.cif) and [NaF.cif](qe_studio/examples/NaF.cif) (rock salt, experimental lattices
+4.0263 and 4.634 Å) were converted with **PBE PAW** and **fixed occupations** and run with **NMR** ticked. Both used
+105 / 840 Ry (the cutoff the converter chose for LiF), so that their ¹⁹F shieldings can be compared.
+
+| | LiF | NaF |
+|---|---|---|
+| σ(¹⁹F) | 378.00 ppm | 401.68 ppm |
+| σ of the cation | ⁷Li 88.27 ppm | ²³Na 533.23 ppm |
+| GIPAW f-sum rule | −8.4537 (−8.4533 expected) | −12.7372 (−12.7368 expected) |
+| Run time (4 cores) | 3 min | 13 min (CG solver, see below) |
+
+- **Chemical shift:** LiF as the ¹⁹F reference (measured δ = −204.3 ppm vs CFCl₃) gives σ_ref = 173.70 ppm and
+  **NaF δ(¹⁹F) = −227.98 ppm, against −224.2 ppm measured**. The 20 ppm difference between the two fluorides is
+  reproduced to within 4 ppm. In the app: on the NaF page, pick the LiF run under *Chemical-shift references*, enter
+  −204.3 and click **Use**.
+- **Fix 1, pseudopotential names:** the converter found no PAW file for Li. PSlibrary names Li `Li.pbe-s-kjpaw`, Mg
+  `spnl`, Zn `dnl`; the converter now tries all PSlibrary valence tags (n, dn, spn, spdn, s, sl, nl, dnl, spnl, spdnl,
+  sp, spl) and finds Li, Mg and Zn.
+- **Fix 2, gipaw.x crash:** for NaF (`Na.pbe-spn-kjpaw`), gipaw.x stopped with "S matrix not positive definite" in
+  its Davidson subspace rotation, although the SCF ran fine. QE Studio now detects this and reruns gipaw.x with
+  `diagonalization = 'cg'` (slower, but it works); the failed output is kept as `nmr/gipaw_david.out`.
+
 ## Test: IR & Raman of wurtzite AlN from a CIF
 
 [qe_studio/examples/AlN_wurtzite.cif](qe_studio/examples/AlN_wurtzite.cif) (P6₃mc, Schulz & Thiemann 1977) was
@@ -294,7 +318,7 @@ dispersion does not matter. Run time: about 35 minutes on 4 cores (ph.x 31 min f
 ## Limitations
 
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. α-quartz (NMR), wurtzite AlN (IR & Raman) and diamond (UV-Vis, phonons) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
+  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman) and diamond (UV-Vis, phonons) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
   and for GaAs with `ibrav = 0`. Magnetic systems
   and other materials should work but are not yet tested; check the first results critically.
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
@@ -336,7 +360,10 @@ dispersion does not matter. Run time: about 35 minutes on 4 cores (ph.x 31 min f
     checks this and explains.
   - **Accuracy:** chemical shifts are only as good as the reference. Use a reference computed with the same
     pseudopotentials, cutoff and k-grid. Tested: 3C-SiC ¹³C δ = 20.2 ppm with diamond as reference, vs 18.4 measured;
-    α-quartz ²⁹Si σ = 436.5 ppm (but δ ≈ −91 vs −107.4 ppm when SiC is used as the reference).
+    α-quartz ²⁹Si σ = 436.5 ppm (but δ ≈ −91 vs −107.4 ppm when SiC is used as the reference); NaF ¹⁹F δ = −228.0
+    vs −224.2 ppm with LiF as the reference.
+  - **Solver fallback:** if gipaw.x stops with "S matrix not positive definite", it is rerun automatically with the
+    CG solver, which takes several times longer (NaF: 13 instead of about 3 minutes).
   - **Build patches:** `build_gipaw.sh` fixes three malformed Fortran format strings in QE-GIPAW 7.6 that make recent
     gfortran stop at the end of a run.
 - **Other QE programs** (`cp.x`, `neb.x`, `pp.x`, …) are not supported.
