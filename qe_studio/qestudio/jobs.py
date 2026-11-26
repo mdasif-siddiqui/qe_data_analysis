@@ -1172,6 +1172,29 @@ def convergence_summary(rows: list[dict], nat: int, thr_mev: float = 1.0) -> dic
 
 
 # --------------------------------------------------------------------------- analysis
+def _site_moments(scf: dict, structure: dict | None) -> list[dict] | None:
+    """Per-atom moments with the species label from the input (Ni1, Ni2, ...)."""
+    sm = scf.get("site_moments")
+    if not sm:
+        return None
+    labels = (structure or {}).get("labels") or []
+    return [{**s, "label": labels[s["atom"] - 1] if s["atom"] - 1 < len(labels) else str(s["atom"])} for s in sm]
+
+
+def _magnetic_order(scf: dict) -> str | None:
+    tot, ab = scf.get("total_mag"), scf.get("abs_mag")
+    if tot is None or ab is None:
+        return None
+    if ab < 0.1:
+        return "non-magnetic"
+    sm = [s["magn"] for s in scf.get("site_moments") or [] if abs(s["magn"]) > 0.1]
+    if abs(tot) < 0.05 and any(m > 0 for m in sm) and any(m < 0 for m in sm):
+        return "antiferromagnetic"
+    if any(m > 0 for m in sm) and any(m < 0 for m in sm):
+        return "ferrimagnetic"
+    return "ferromagnetic"
+
+
 def analyse_job(job: Job) -> dict:
     d = job.dir
     res: dict = {"id": job.id}
@@ -1184,6 +1207,7 @@ def analyse_job(job: Job) -> dict:
         atoms = qein.read_structure(scf_text)
         res["structure"] = {"formula": atoms.get_chemical_formula(mode="hill"), "natoms": len(atoms),
                             "symbols": atoms.get_chemical_symbols(), "positions": atoms.get_positions().tolist(),
+                            "labels": list(atoms.info.get("labels") or []),
                             "cell": atoms.cell.array.tolist(), "abc": list(atoms.cell.cellpar()),
                             "volume_A3": atoms.get_volume()}
     except Exception as e:
@@ -1201,6 +1225,8 @@ def analyse_job(job: Job) -> dict:
         "scf_iterations": scf.get("scf_iterations"), "wall_s": scf.get("wall_s"),
         "total_force": scf.get("total_force"), "pressure_kbar": scf.get("pressure_kbar"),
         "total_mag": scf.get("total_mag"), "abs_mag": scf.get("abs_mag"), "nelec": scf.get("nelec"),
+        "site_moments": _site_moments(scf, res.get("structure")),
+        "magnetic_order": _magnetic_order(scf),
         "nks": scf.get("nks"), "ecutwfc": scf.get("ecutwfc"), "ecutrho": scf.get("ecutrho"),
         "xc": scf.get("xc"), "mpi_procs": scf.get("mpi_procs"), "occupations": occ,
     }

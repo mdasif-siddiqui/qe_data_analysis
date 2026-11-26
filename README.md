@@ -158,8 +158,12 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
     `_cell_formula_units_Z` atom count (usually coordinates given for a different origin than the symmetry
     operations), when atoms overlap (< 0.7 Å), and when sites are partially occupied (disorder).
   - **Spin:** *auto* (default) makes the input spin-polarised (`nspin = 2`, ferromagnetic start) when it contains a
-    typically magnetic element (Cr, Mn, Fe, Co, Ni, 4f rare earths); *on* / *off* force it. Antiferromagnetic orders
-    need a supercell with separate species for up and down sites (not generated automatically).
+    typically magnetic element (Cr, Mn, Fe, Co, Ni, 4f rare earths); *on* / *off* force it. *antiferromagnetic*
+    makes each CIF site label of a magnetic element its own species (Ni1, Ni2, …) with alternating starting
+    moments (+, −, …), so the CIF must describe the magnetic cell with one label per spin sublattice (see the NiO
+    example). The magnetic cell is kept, not reduced to the smaller chemical cell.
+- **Magnetic order:** after the SCF the moment on each site is read, and the run is labelled non-magnetic,
+  ferromagnetic, antiferromagnetic or ferrimagnetic (shown in the Magnetisation tile with the per-site moments).
 - **IR & Raman spectra** (tick **IR & Raman**): `ph.x` at Γ with the dielectric tensor and Born effective charges
   (`epsil`), Raman tensors (`lraman`), then `dynmat.x`.
   - **Shown:** ε∞, Born charges, TO and LO frequencies (LO–TO splitting), IR intensities (km/mol) and Raman activities
@@ -316,6 +320,33 @@ first: vc-relax**, bands and DOS (about 4.5 minutes on 4 cores).
 - **Note:** about −5 kbar remains after the relaxation because the final SCF of a vc-relax rebuilds the plane-wave
   basis for the new cell; a higher cutoff reduces this.
 
+## Test: antiferromagnetic NiO from a CIF
+
+[qe_studio/examples/NiO_AFM-II.cif](qe_studio/examples/NiO_AFM-II.cif) describes rock-salt NiO (a = 4.177 Å) in its
+AFM-II magnetic cell (R-3m, hexagonal axes): ferromagnetic (111) Ni planes, alternating up (Ni1) and down (Ni2). It
+was converted with **PBE** (`Ni.pbe-spn-rrkjus_psl`, `O.pbe-n-kjpaw_psl`, 75 / 600 Ry), **smearing** and **Spin:
+antiferromagnetic** (4-atom cell, species Ni1 and Ni2), then run with bands and DOS (SCF 11 minutes on 4 cores). For
+comparison the same structure was also converted with **Spin: auto** (ferromagnetic, 2-atom cell, SCF only).
+
+| | QE Studio (PBE, no +U) | Measured |
+|---|---|---|
+| Magnetic order | antiferromagnetic: total 0.00, absolute 3.04 μB/cell | antiferromagnetic (AFM-II) |
+| Ni moment | Ni1 +1.37, Ni2 −1.37 μB; O 0.00 | 1.64–1.9 μB |
+| E(FM) − E(AFM) | +269 meV per NiO (AFM more stable) | AFM is the ground state |
+| Band gap | 0.86 eV indirect (1.02 eV on the band path) | ≈ 4.3 eV |
+| Ferromagnetic run | 1.70 μB/cell, metallic | — |
+
+- **Accuracy:** the order, its stability and the ≈ 1.4 μB moment are what plain PBE gives for NiO. The moment
+  is too small and the gap far too small, because PBE does not localise Ni 3d electrons enough; DFT+U (U ≈ 5–6 eV)
+  is needed for a realistic gap and moment, and is not set up by the converter.
+- **Fixes from this test:**
+  - The converter could not start an antiferromagnet: all Ni atoms were one species, and the symmetry reduction
+    merged Ni1 and Ni2 into the 2-atom chemical cell. The new *antiferromagnetic* spin option keeps them apart.
+  - The run page showed only the total and absolute magnetisation. It now reads the moment on each site, names the
+    magnetic order, and shows both in the Magnetisation tile ("Ni1 +1.37, Ni2 −1.37 μB per site").
+- **Shown in the app:** spin-up and spin-down bands lie on top of each other, as they must for an antiferromagnet;
+  the PDOS shows Ni d states at the top of the valence band.
+
 ## Test: UV-Vis of aluminium (metal) from a CIF
 
 [qe_studio/examples/Al.cif](qe_studio/examples/Al.cif) (fcc, a = 4.0495 Å) was converted with **LDA norm-conserving**
@@ -394,9 +425,11 @@ energies agree to all digits with the SCF runs made by hand for the IR & Raman t
 ## Limitations
 
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman, convergence tests) and diamond (UV-Vis, phonons), aluminium (UV-Vis of a metal) and bcc iron (ferromagnet) were run end to end from CIFs
-  (see above). Input reading was also checked for a hexagonal 2D slab and for GaAs with `ibrav = 0`. Antiferromagnets
-  and other materials should work but are not yet tested; check the first results critically.
+  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman, convergence tests) and diamond (UV-Vis, phonons), aluminium (UV-Vis of a metal) , bcc iron (ferromagnet) and NiO (antiferromagnet) were run end
+  to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab and for GaAs with `ibrav = 0`.
+  Other materials should work but are not yet tested; check the first results critically.
+- **No DFT+U:** strongly correlated oxides (NiO, MnO, CoO, …) get a far too small gap from plain PBE. Add
+  `lda_plus_u` / a `HUBBARD` card to the input by hand if you need it.
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
   that E_F moves by +130 meV on the denser NSCF grid and that the convergence tests did not converge.
 - **2D materials / slabs:** the automatic k-path includes points along the vacuum direction. Enter the in-plane

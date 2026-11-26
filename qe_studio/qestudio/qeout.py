@@ -155,6 +155,13 @@ def parse_pw(text: str) -> dict:
     d["pressure_kbar"] = _last(r"P=\s*(" + FLOAT + ")", text)
     d["total_mag"] = _last(r"total magnetization\s*=\s*(" + FLOAT + ")", text)
     d["abs_mag"] = _last(r"absolute magnetization\s*=\s*(" + FLOAT + ")", text)
+    # moments integrated in a small sphere per atom (last block printed); antiferromagnets have total ~ 0
+    blocks = text.split("Magnetic moment per site")
+    if len(blocks) > 1:
+        sites = re.findall(r"atom\s*:?\s*(\d+)\s*(?:\(R=\s*(?:" + FLOAT + r")\))?\s*charge\s*[=:]\s*(" + FLOAT + r")\s*magn\s*[=:]\s*("
+                           + FLOAT + ")", blocks[-1][:4000])
+        if sites:
+            d["site_moments"] = [{"atom": int(a), "charge": _f(c), "magn": _f(m)} for a, c, m in sites]
     d["scf_iterations"] = _last(r"convergence has been achieved in\s+(\d+)\s+iterations", text, conv=int)
     wall = _last(r"PWSCF\s*:\s*(.*?)CPU\s+(.*?)WALL", text, group=2, conv=str)
     d["wall_s"] = _wall_seconds(wall) if wall else None

@@ -161,6 +161,22 @@ def _cif_checks(cif_text: str, atoms) -> list[str]:
     return out
 
 
+def _site_labels(cif_text: str, atoms) -> list[str] | None:
+    """CIF site label of every atom ASE built (ASE keeps the site index in the 'spacegroup_kinds' array)."""
+    if "spacegroup_kinds" not in atoms.arrays:
+        return None
+    try:
+        from ase.io.cif import parse_cif
+        block = next(iter(parse_cif(io.StringIO(cif_text))))
+        labels = [str(x) for x in block.get("_atom_site_label")]
+    except Exception:
+        return None
+    kinds = atoms.arrays["spacegroup_kinds"]
+    if len(labels) <= int(max(kinds)):
+        return None
+    return [labels[int(k)] for k in kinds]
+
+
 # Elements whose compounds are often magnetic (open 3d / 4f shells). "auto" spin polarisation starts these
 # ferromagnetically; non-magnetic compounds of them (e.g. low-spin Fe2+) simply converge to zero moment.
 MAGNETIC = {"Cr", "Mn", "Fe", "Co", "Ni", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb"}
@@ -185,23 +201,53 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
         atoms = atoms[0]
     warnings += _cif_checks(cif_text, atoms)
     info: dict = {"formula_cif": atoms.get_chemical_formula(mode="hill"), "natoms_cif": len(atoms)}
+
+    # species per atom: normally the element; for antiferromagnets each CIF site label of a magnetic element
+    # becomes its own species (Ni1, Ni2, ...), with alternating starting moments
+    symbols = atoms.get_chemical_symbols()
+    species = list(symbols)
+    afm_sign: dict[str, int] = {}
+    if spin == "afm":
+        site_of = _site_labels(cif_text, atoms)
+        for el in dict.fromkeys(symbols):
+            if el not in MAGNETIC or site_of is None:
+                continue
+            labs = list(dict.fromkeys(site_of[i] for i, s in enumerate(symbols) if s == el))
+            if len(labs) < 2:
+                continue
+            for j, lab in enumerate(labs):
+                afm_sign[f"{el}{j + 1}"] = 1 if j % 2 == 0 else -1
+            for i, s in enumerate(symbols):
+                if s == el:
+                    species[i] = f"{el}{labs.index(site_of[i]) + 1}"
+        if not afm_sign:
+            warnings.append("Antiferromagnetic needs the magnetic cell in the CIF, with the spin-up and spin-down sites of "
+                            "the magnetic element under different labels (e.g. Ni1 and Ni2). This CIF has one label per "
+                            "magnetic element, so a ferromagnetic start was used instead.")
+    kinds_list = list(dict.fromkeys(species))
+    type_id = {sp: i + 1 for i, sp in enumerate(kinds_list)}
+    sp_el = {sp: el for sp, el in zip(species, symbols)}
     try:
         import spglib
-        cell = (atoms.cell.array, atoms.get_scaled_positions(), atoms.numbers)
+        cell = (atoms.cell.array, atoms.get_scaled_positions(), [type_id[s] for s in species])
         ds = spglib.get_symmetry_dataset(cell, symprec=1e-3)
         if ds is not None:
-            info["spacegroup"] = f"{ds.international} (No. {ds.number})"
+            info["spacegroup"] = f"{ds.international} (No. {ds.number})" + (" (magnetic cell)" if afm_sign else "")
         if primitive:
             # standardized primitive cell with idealized positions: rounded CIF values such as 0.33333
-            # would otherwise break the symmetry slightly (QE then finds fewer symmetry operations)
+            # would otherwise break the symmetry slightly (QE then finds fewer symmetry operations).
+            # Species ids (not atomic numbers) keep spin-up and spin-down sites apart.
             lat, pos, nums = spglib.standardize_cell(cell, to_primitive=True, no_idealize=False, symprec=1e-3)
             if len(nums) <= len(atoms):
-                atoms = Atoms(numbers=nums, cell=lat, scaled_positions=pos, pbc=True)
+                inv = {v: k for k, v in type_id.items()}
+                species = [inv[int(n)] for n in nums]
+                atoms = Atoms(symbols=[sp_el[s] for s in species], cell=lat, scaled_positions=pos, pbc=True)
     except ImportError:
         warnings.append("spglib is not installed: the cell was not reduced and the space group is unknown.")
     info["natoms"] = len(atoms)
     info["formula"] = atoms.get_chemical_formula(mode="hill")
     elements = list(dict.fromkeys(atoms.get_chemical_symbols()))
+    species_list = list(dict.fromkeys(species))
     from ase.data import atomic_masses, atomic_numbers
 
     # pseudopotentials and cutoffs
@@ -255,33 +301,43 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
     prefix = prefix or re.sub(r"[^\w]", "", info["formula"]) or "pwscf"
     lines = ["&CONTROL", "  calculation = 'scf'", f"  prefix = '{prefix}'", "  outdir = './tmp/'",
              "  pseudo_dir = './pseudos/'", "  tprnfor = .true.", "  tstress = .true.", "/", "&SYSTEM", "  ibrav = 0",
-             f"  nat = {len(atoms)}", f"  ntyp = {len(elements)}", f"  ecutwfc = {ecutwfc:g}", f"  ecutrho = {ecutrho:g}"]
+             f"  nat = {len(atoms)}", f"  ntyp = {len(species_list)}", f"  ecutwfc = {ecutwfc:g}", f"  ecutrho = {ecutrho:g}"]
     if occupations == "smearing":
         lines += ["  occupations = 'smearing'", "  smearing = 'mv'", "  degauss = 0.01"]
     mag = [el for el in elements if el in MAGNETIC]
-    polarised = spin == "on" or (spin == "auto" and bool(mag))
-    info["spin"] = "spin-polarised (ferromagnetic start)" if polarised else "non-magnetic"
+    polarised = spin in ("on", "afm") or (spin == "auto" and bool(mag))
+    info["spin"] = ("spin-polarised (antiferromagnetic start: " + ", ".join(f"{s} {'+' if v > 0 else '−'}" for s, v in afm_sign.items()) + ")"
+                    if afm_sign else "spin-polarised (ferromagnetic start)" if polarised else "non-magnetic")
     if polarised:
         lines.append("  nspin = 2")
-        for i, el in enumerate(elements, 1):
-            if el in MAGNETIC or spin == "on":
+        for i, sp in enumerate(species_list, 1):
+            el = sp_el[sp]
+            if sp in afm_sign:
+                lines.append(f"  starting_magnetization({i}) = {0.5 * afm_sign[sp]:g}")
+            elif el in MAGNETIC or spin == "on":
                 lines.append(f"  starting_magnetization({i}) = {0.5 if el in MAGNETIC else 0.1}")
-        warnings.append(f"Spin-polarised with a ferromagnetic start on {', '.join(mag) or 'all atoms'}. Antiferromagnetic or "
-                        "other orders need a supercell with separate species for spin-up and spin-down sites.")
+        if afm_sign:
+            warnings.append("Antiferromagnetic start: " + ", ".join(f"{s} {'up' if v > 0 else 'down'}" for s, v in afm_sign.items())
+                            + ". Check the moments in the results; a calculation can still end in another magnetic state.")
+        else:
+            warnings.append(f"Spin-polarised with a ferromagnetic start on {', '.join(mag) or 'all atoms'}. For an "
+                            "antiferromagnet choose Spin: antiferromagnetic and give the magnetic cell with separate site labels.")
         if occupations != "smearing":
             lines.append("  tot_magnetization = 0")
-            warnings.append("Fixed occupations with nspin = 2 need a fixed total moment: tot_magnetization = 0 was set "
-                            "(non-magnetic result). For a magnet, choose 'metal / unknown (smearing)'.")
+            if not afm_sign:
+                warnings.append("Fixed occupations with nspin = 2 need a fixed total moment: tot_magnetization = 0 was set "
+                                "(non-magnetic result). For a ferromagnet, choose 'metal / unknown (smearing)'.")
     lines += ["/", "&ELECTRONS", "  conv_thr = 1.0d-9", "  mixing_beta = 0.5", "/", "ATOMIC_SPECIES"]
-    for el in elements:
+    for sp in species_list:
+        el = sp_el[sp]
         mass = atomic_masses[atomic_numbers[el]]
-        lines.append(f"  {el:2s} {mass:9.4f} {ps[el] or el + '.UPF'}")
+        lines.append(f"  {sp:3s} {mass:9.4f} {ps[el] or el + '.UPF'}")
     lines.append("CELL_PARAMETERS angstrom")
     for v in atoms.cell.array:
         lines.append("  " + " ".join(f"{x:14.9f}" for x in v))
     lines.append("ATOMIC_POSITIONS crystal")
-    for s, p in zip(atoms.get_chemical_symbols(), atoms.get_scaled_positions(wrap=True)):
-        lines.append(f"  {s:2s} " + " ".join(f"{x:13.9f}" for x in p))
+    for s, p in zip(species, atoms.get_scaled_positions(wrap=True)):
+        lines.append(f"  {s:3s} " + " ".join(f"{x:13.9f}" for x in p))
     lines += ["K_POINTS automatic", "  {} {} {} 0 0 0".format(*grid)]
     if occupations == "fixed":
         warnings.append("Fixed occupations: correct only for insulators and semiconductors. Use smearing for metals.")

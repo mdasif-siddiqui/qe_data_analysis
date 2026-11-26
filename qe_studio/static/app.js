@@ -388,6 +388,15 @@ async function runInspect() {
   $("#run").disabled = !!r.errors?.length;
 }
 
+// per-site moments (one entry per species label with a sizeable moment): "Ni1 +1.37, Ni2 −1.37 μB"
+function siteMoments(sm) {
+  if (!sm || !sm.length) return "";
+  const seen = new Map();
+  sm.forEach((s) => { if (Math.abs(s.magn) >= 0.05 && !seen.has(s.label)) seen.set(s.label, s.magn); });
+  if (!seen.size) return "";
+  return "<br>" + [...seen].map(([l, m]) => `${esc(l)} ${m >= 0 ? "+" : "−"}${Math.abs(m).toFixed(2)}`).join(", ") + " μB per site";
+}
+
 // phonons and IR/Raman need a relaxed structure: point it out when they are ticked without "relax first"
 function relaxHint() {
   const need = ($("#o-ph").checked || $("#o-sp").checked) && !$("#o-relax").value;
@@ -497,7 +506,10 @@ function renderResults(st) {
         : tile("Fermi energy", `${fmt(S.fermi_ev, 3)} <small>eV</small>`, esc(S.occupations)),
     tile("SCF", `${S.scf_iterations ?? "–"} <small>iterations</small>`, `${fmt(S.wall_s, 1)} s wall · ${S.mpi_procs || 1} MPI · QE ${esc(S.qe_version)}`),
     tile("Pressure", `${fmt(S.pressure_kbar, 2)} <small>kbar</small>`, `total force ${fmt(S.total_force, 5)} Ry/bohr`),
-    ...(S.total_mag !== null && S.total_mag !== undefined ? [tile("Magnetisation", `${fmt(S.total_mag, 2)} <small>μB/cell</small>`, `absolute ${fmt(S.abs_mag, 2)} μB/cell`)] : []),
+    ...(S.total_mag !== null && S.total_mag !== undefined ? [tile(
+      S.magnetic_order && S.magnetic_order !== "non-magnetic" ? `Magnetisation · ${S.magnetic_order}` : "Magnetisation",
+      `${fmt(S.total_mag, 2)} <small>μB/cell</small>`,
+      `absolute ${fmt(S.abs_mag, 2)} μB/cell` + siteMoments(S.site_moments))] : []),
   ].join("");
   const checks = [...(R.checks || [])];
   if (!checks.length) checks.push({ level: "ok", msg: "All outputs end with JOB DONE and every SCF converged." });

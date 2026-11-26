@@ -1,0 +1,25 @@
+data_NiO_AFM-II
+# NiO in its antiferromagnetic AFM-II order: ferromagnetic (111) planes of Ni, alternating up (Ni1) and down (Ni2).
+# Magnetic cell of rock-salt NiO (a_cubic = 4.177 A), hexagonal axes of R-3m: a = a_cubic/sqrt(2), c = 2*sqrt(3)*a_cubic.
+# Ni1 and Ni2 are the same element on different sites; convert with Spin: antiferromagnetic.
+_chemical_name_systematic         'Nickel(II) oxide, antiferromagnetic cell'
+_chemical_formula_sum             'Ni O'
+_cell_formula_units_Z             6
+_cell_length_a                    2.9536
+_cell_length_b                    2.9536
+_cell_length_c                    14.4696
+_cell_angle_alpha                 90
+_cell_angle_beta                  90
+_cell_angle_gamma                 120
+_symmetry_space_group_name_H-M    'R -3 m'
+_symmetry_Int_Tables_number       166
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+Ni1 Ni 0.0 0.0 0.0  1.0
+Ni2 Ni 0.0 0.0 0.5  1.0
+O1  O  0.0 0.0 0.25 1.0
