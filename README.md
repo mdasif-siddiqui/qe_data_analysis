@@ -169,6 +169,9 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
     extinction n and k, reflectivity, the absorption onset, and n at 589 nm.
   - **Scissor shift:** optional, corrects the too-small LDA/GGA gap.
   - **Quality check:** the f-sum rule is reported as a measure of whether enough empty bands were included.
+  - **Metals** (smearing, states at E_F): a Drude term for the free carriers is added, with the plasma frequency
+    computed from the electron velocities at E_F. The tiles then show the Drude plasma energy, the plasma edge, and
+    R, n, k at 589 nm instead of ε∞ and an absorption onset.
 
 - **NMR shielding** (tick **NMR**; the first NMR run builds GIPAW automatically, installation step 5): `pw.x` and `gipaw.x`.
   - **Shown:** isotropic shielding σ, anisotropy, asymmetry η and principal components for every atom, and a simulated
@@ -290,6 +293,29 @@ about 3 minutes on 4 cores.
 - **Plot fix:** the absorption plot's wavelength range now follows the onset (diamond: 100–900 nm instead of a
   fixed 150–1500 nm, where its UV absorption was a thin sliver).
 
+## Test: UV-Vis of aluminium (metal) from a CIF
+
+[qe_studio/examples/Al.cif](qe_studio/examples/Al.cif) (fcc, a = 4.0495 Å) was converted with **LDA norm-conserving**
+(`Al.pz-vbc`, 50 Ry) and **smearing**, then run with **UV-Vis** ticked: 12 bands on a 16×16×16 k-grid, 0.1 eV
+broadening, 15 seconds on 4 cores.
+
+| | QE Studio | Measured / literature |
+|---|---|---|
+| Plasma edge (bulk plasmon, ε₁ = 0) | 15.64 eV | ≈ 15.0–15.3 eV |
+| Drude plasma energy (free carriers) | 12.91 eV | ≈ 12.5–13 eV in other DFT calculations |
+| Interband absorption peak | 1.37 eV | ≈ 1.5 eV |
+| ε₁ at 2.1 eV (589 nm) | −40.5 | ≈ −50 |
+| k / R at 589 nm | 6.37 / 0.99 | ≈ 7 / 0.92 |
+| f-sum rule | 98% | 100% ideal |
+
+- **Fix from this test:** UV-Vis had no metal handling: it included only transitions between bands. For aluminium it
+  gave ε₁ = +40 to +60 below 1 eV (real Al: large and negative), n(589 nm) = 0.06, an f-sum of 31% and meaningless
+  "ε∞" and "onset" tiles. The free-carrier (Drude) term is now computed and added; diamond (an insulator) is unchanged
+  (ε∞ = 6.466).
+- **Limits:** the Drude damping equals the broadening (0.1 eV here); it is a model parameter, not calculated. With
+  it, Al absorbs too little in the visible (R 0.99 instead of 0.92, n too low). The plasma frequency uses a 0.3 eV
+  Gaussian at E_F; its convergence with this width and the k-grid was not tested.
+
 ## Test: phonons of diamond from a CIF
 
 The same [diamond CIF](qe_studio/examples/C_diamond.cif) (LDA norm-conserving, 100 Ry, k-grid 13×13×13) was first
@@ -345,7 +371,7 @@ energies agree to all digits with the SCF runs made by hand for the IR & Raman t
 ## Limitations
 
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman, convergence tests) and diamond (UV-Vis, phonons) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
+  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman, convergence tests) and diamond (UV-Vis, phonons) and aluminium (UV-Vis of a metal) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
   and for GaAs with `ibrav = 0`. Magnetic systems
   and other materials should work but are not yet tested; check the first results critically.
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
@@ -380,6 +406,8 @@ energies agree to all digits with the SCF runs made by hand for the IR & Raman t
   - **Requirements:** norm-conserving pseudopotentials and QE's HDF5 wavefunctions (the conda-forge build has them).
   - **Why not epsilon.x:** QE's own `epsilon.x` is not used; in this build it gives k-grid-dependent spectra that are
     several times too large.
+  - **Metals:** the Drude damping is not calculated (it equals the broadening), so visible absorption and n of metals
+    are only qualitative; the plasma edge and ε₁ are more reliable. Tested with aluminium.
 - **NMR:**
   - **Insulators only** (`occupations = 'fixed'`). Knight shifts of metals are not calculated.
   - **Pseudopotentials:** they must carry GIPAW data. PSlibrary **PAW** files work. PSlibrary ultrasoft files contain

@@ -963,7 +963,10 @@ def run_uvvis(mgr: Manager, job: Job, text: str, prefix: str, opts: dict, np_: i
                               shift_ev=float(opts.get("uv_scissor") or 0))
         meta.update(grid=grid, pseudo_types=types)
         (ud / "optics.json").write_text(json.dumps(meta, indent=1))
-        job.log(f"UV-Vis: eps1(0) = {meta['eps_static']:.2f}, f-sum ratio {meta['fsum_ratio']:.2f}")
+        if meta.get("metal"):
+            job.log(f"UV-Vis (metal): Drude plasma energy {meta['drude_plasma_ev']:.2f} eV, f-sum ratio {meta['fsum_ratio']:.2f}")
+        else:
+            job.log(f"UV-Vis: eps1(0) = {meta['eps_static']:.2f}, f-sum ratio {meta['fsum_ratio']:.2f}")
     _timed(job, "optics", opt)
 
 
@@ -979,12 +982,23 @@ def analyse_uvvis(d: Path) -> dict | None:
     step = max(1, len(E) // 1500)                          # keep the payload small
     res = {"meta": meta, "E": E[::step].tolist(), "eps1": e1[::step].tolist(), "eps2": e2[::step].tolist(),
            "n": n[::step].tolist(), "k": k[::step].tolist(), "alpha": alpha[::step].tolist(), "R": R[::step].tolist()}
+    i589 = int(np.argmin(abs(E - optics.HC_EV_NM / 589.0)))
+    res["n_589"] = float(n[i589])
+    res["k_589"] = float(k[i589])
+    res["R_589"] = float(R[i589])
+    if meta.get("metal"):
+        # a metal absorbs at every energy: no onset; the screened plasma edge is where eps1 crosses zero upwards
+        up = np.nonzero((e1[:-1] < 0) & (e1[1:] >= 0) & (E[:-1] > 1.0))[0]
+        if len(up):
+            res["plasma_edge_ev"] = float(E[up[-1] + 1])
+        inter = E > 0.3          # the interband peak, not the Drude divergence at w -> 0
+        res["peak_eps2_ev"] = float(E[inter][int(np.argmax(e2[inter] - optics.drude(E[inter], meta["drude_plasma_ev"],
+                                                                                         meta["drude_gamma_ev"])[1]))])
+        return res
     on = np.nonzero(alpha >= 1e4)[0]
     if len(on):
         res["onset_ev"] = float(E[on[0]])
         res["onset_nm"] = float(optics.HC_EV_NM / E[on[0]])
-    i589 = int(np.argmin(abs(E - optics.HC_EV_NM / 589.0)))
-    res["n_589"] = float(n[i589])
     res["peak_eps2_ev"] = float(E[int(np.argmax(e2))])
     return res
 

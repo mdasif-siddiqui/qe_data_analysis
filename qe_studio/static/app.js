@@ -690,7 +690,12 @@ function renderUV(R) {
   $("#uv-section").hidden = !uv || !!uv.skipped;
   if (!uv || uv.skipped) return;
   const m = uv.meta || {};
-  $("#uv-tiles").innerHTML = [
+  $("#uv-tiles").innerHTML = m.metal ? [
+    tile("Drude plasma energy", `${fmt(m.drude_plasma_ev, 2)} <small>eV</small>`, `free carriers at E_F · free-electron value ${fmt(m.plasma_ev, 2)} eV`),
+    tile("Plasma edge", uv.plasma_edge_ev ? `${uv.plasma_edge_ev.toFixed(2)} <small>eV</small>` : "–", "ε₁ crosses zero: transparent above"),
+    tile("At 589 nm", `R = ${fmt(uv.R_589, 2)}`, `n = ${fmt(uv.n_589, 2)}, k = ${fmt(uv.k_589, 2)}`),
+    tile("f-sum rule", m.fsum_ratio ? `${(m.fsum_ratio * 100).toFixed(0)} <small>%</small>` : "–", `${m.nbnd} bands, ${m.grid ? m.grid.join("×") : ""} k-grid · incl. Drude`),
+  ].join("") : [
     tile("ε∞ (static, electronic)", fmt(m.eps_static, 2), "ε₁ at zero frequency"),
     tile("Absorption onset", uv.onset_ev ? `${uv.onset_ev.toFixed(2)} <small>eV</small>` : "–", uv.onset_nm ? `${uv.onset_nm.toFixed(0)} nm · where α reaches 10⁴ cm⁻¹` : "α stays below 10⁴ cm⁻¹"),
     tile("Refractive index", fmt(uv.n_589, 2), "n at 589 nm"),
@@ -716,8 +721,12 @@ function renderUV(R) {
   }[key];
   Plotly.react($("#p-uv2"), defs[0], layout({ xaxis: axis({ title: "Photon energy (eV)", range: [0, Math.min(15, E[E.length - 1])] }),
     yaxis: axis({ title: defs[1], exponentformat: "power" }), hovermode: "x unified", showlegend: defs[0].length > 1 }), CONFIG);
-  $("#uv-note").textContent = "Independent-particle approximation (no excitons, no local fields; the nonlocal-pseudopotential commutator is left out, " +
-    "which tends to overestimate ε by 10–20%). LDA/GGA underestimate band gaps, so the onset is red-shifted unless a scissor shift is used.";
+  $("#uv-note").textContent = m.metal
+    ? `Metal: interband transitions plus a Drude term for the free carriers (plasma energy from the electron velocities at E_F, ` +
+      `damping ${fmt(m.drude_gamma_ev, 2)} eV = the broadening). ε₁ is large and negative below the plasma edge, so the metal reflects strongly there. ` +
+      "Independent-particle approximation; the damping is a model parameter, not calculated."
+    : "Independent-particle approximation (no excitons, no local fields; the nonlocal-pseudopotential commutator is left out, " +
+      "which tends to overestimate ε by 10–20%). LDA/GGA underestimate band gaps, so the onset is red-shifted unless a scissor shift is used.";
 }
 /* ------------------------------------------------------------------ NMR */
 const nmrRef = (el) => { const v = localStorage.getItem("qe-nmr-ref-" + el); return v === null || v === "" ? null : Number(v); };
