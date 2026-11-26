@@ -128,6 +128,11 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
 - **Metals** (`occupations = 'smearing'`): detected from bands crossing the Fermi level; plots use E_F = 0.
 - **Magnetic materials** (`nspin = 2`): spin-up and spin-down bands and DOS, plus the magnetisation.
 - **High-symmetry k-path:** chosen automatically for the lattice type, or entered by hand (e.g. `GXMGR`).
+- **Convergence tests** (tick **Convergence tests**): SCF runs at 0.5×, 0.75×, 1×, 1.25×, 1.5× and 2× your ecutwfc
+  (same ecutrho/ecutwfc ratio) and on your k-grid scaled by ¼× to 1.5× (your own grid is always one of the points; a
+  direction with one k-point, such as a slab's vacuum direction, stays at 1). Energy and pressure differences to the
+  largest setting are plotted, and the first value within the threshold (default 1 meV/atom) is recommended. Your own
+  lists can be given instead.
 - **Phonons** (optional, tick **Phonons**): DFPT with `ph.x` on a q-grid (default 4×4×4), then `q2r.x` and `matdyn.x`.
   - **Dispersion** along the same path as the bands, with the phonon DOS beside it (per element), in cm⁻¹, THz or meV.
   - **Stability check:** warns about imaginary frequencies and large acoustic-sum-rule corrections.
@@ -315,10 +320,32 @@ dispersion does not matter. Run time: about 35 minutes on 4 cores (ph.x 31 min f
   same q-mesh diamond's DOS (up to 1355 cm⁻¹) was very spiky. The broadening is now (highest frequency)/150, at
   least 3 cm⁻¹: 15 times smoother for diamond at the same cost, silicon essentially unchanged.
 
+## Test: convergence tests on AlN from a CIF
+
+The [AlN CIF](qe_studio/examples/AlN_wurtzite.cif) was converted with **LDA norm-conserving** (100 / 400 Ry, k-grid
+10×10×6) and run with **Convergence tests** ticked and the default settings (about 8 minutes on 4 cores). The
+energies agree to all digits with the SCF runs made by hand for the IR & Raman test (e.g. −48.71566948 Ry at 100 Ry).
+
+| ecutwfc (Ry) | 50 | 75 | 100 | 125 | 150 | 200 |
+|---|---|---|---|---|---|---|
+| ΔE to 200 Ry (meV/atom) | 768 | 83 | 12.1 | 6.4 | 2.9 | 0 |
+| ΔP to 200 Ry (kbar) | −303 | −58 | −5.1 | −1.4 | −1.5 | 0 |
+
+| k-grid | 2×2×2 | 5×5×3 | 8×8×4 | 10×10×6 | 12×12×8 | 15×15×9 |
+|---|---|---|---|---|---|---|
+| ΔE to 15×15×9 (meV/atom) | 305 | 1.95 | 0.014 | 0.005 | −0.003 | 0 |
+
+- **Cutoff:** the app reports that the total energy is not converged to 1 meV/atom up to 200 Ry, which is correct for
+  the old `N.pz-vbc` pseudopotential. Pressure (and with it structures and frequencies) is converged much earlier, to
+  about 1.5 kbar from 125 Ry; only absolute total energies need the very high cutoff.
+- **k-points:** recommended 8×8×4 (insulator, converges fast).
+- **Fix from this test:** the k test used to rebuild its grids from a k-point density, so its "1×" point was 10×10×5
+  instead of the input's 10×10×6. It now scales the input's own grid, as in the table above.
+
 ## Limitations
 
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman) and diamond (UV-Vis, phonons) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
+  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman, convergence tests) and diamond (UV-Vis, phonons) were run end to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab
   and for GaAs with `ibrav = 0`. Magnetic systems
   and other materials should work but are not yet tested; check the first results critically.
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns

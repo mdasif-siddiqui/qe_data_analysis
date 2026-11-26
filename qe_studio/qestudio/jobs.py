@@ -1076,6 +1076,7 @@ def convergence(mgr: Manager, job: Job, text: str, kind: str, opts: dict, np_: i
     ratio = float(rho0) / ecut0 if rho0 else 4.0
     kinfo = qein.kpoints_info(parsed)
     atoms = qein.read_structure(text)
+    grids: dict = {}
     if kind == "ecut":
         vals = [float(v) for v in re.split(r"[,\s]+", str(opts.get("ecut_list") or "")) if v] or \
             [round(ecut0 * f) for f in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)]
@@ -1083,8 +1084,17 @@ def convergence(mgr: Manager, job: Job, text: str, kind: str, opts: dict, np_: i
         if not kinfo.get("grid"):
             job.step("conv_k", status="skipped", error="K_POINTS is not 'automatic'")
             return
-        vals = [int(v) for v in re.split(r"[,\s]+", str(opts.get("k_list") or "")) if v] or \
-            sorted({max(1, int(round(max(kinfo["grid"]) * f))) for f in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5)})
+        user = [int(v) for v in re.split(r"[,\s]+", str(opts.get("k_list") or "")) if v]
+        if user:      # "k (largest)" values: grids of that density along the longest reciprocal vector
+            for v in user:
+                grids[v] = qein.kgrid_for_density(atoms, v)
+        else:         # scale the input's own grid, so the 1x point is exactly the grid being used
+            g0 = [int(x) for x in kinfo["grid"]]
+            for f in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5):
+                g = [1 if x == 1 else max(1, int(round(x * f))) for x in g0]   # 1 stays 1 (slab / vacuum direction)
+                if max(g) not in grids:               # skip duplicates from rounding small grids
+                    grids[max(g)] = g
+        vals = sorted(grids)
     root = job.dir / f"conv_{kind}"
     root.mkdir(exist_ok=True)
     rows = []
@@ -1106,7 +1116,7 @@ def convergence(mgr: Manager, job: Job, text: str, kind: str, opts: dict, np_: i
             t = qein.set_param(t, "system", "ecutrho", float(v) * ratio)
             label = f"ecutwfc = {v:g} Ry"
         else:
-            grid = qein.kgrid_for_density(atoms, v)
+            grid = grids[v]
             sh = kinfo.get("shift", [0, 0, 0])
             t = qein.replace_card(t, "K_POINTS", "K_POINTS automatic\n  {} {} {} {} {} {}\n".format(*grid, *sh))
             label = "k = {}x{}x{}".format(*grid)
