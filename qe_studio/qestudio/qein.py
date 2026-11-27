@@ -327,11 +327,145 @@ def _floats(line: str, n: int) -> list[float]:
     return [float(x.lower().replace("d", "e")) for x in line.split()[:n]]
 
 
+SG_KEYS = ["space_group", "uniqueb", "origin_choice", "rhombohedral"]
+CELL_KEYS = ["A", "B", "C", "cosAB", "cosAC", "cosBC"] + [f"celldm({i})" for i in range(1, 7)]
+
+
+def _hall_number(sg: int, uniqueb: bool, origin: int, rhombohedral: bool) -> int:
+    """spglib Hall number for a space group in QE's setting conventions (space_group + flags)."""
+    import spglib
+    halls = []
+    for h in range(1, 531):
+        t = spglib.get_spacegroup_type(h)
+        if t.number == sg:
+            halls.append((h, t.choice))
+    if not halls:
+        raise ValueError(f"space_group = {sg} is not a valid space-group number")
+    want = {"b1" if uniqueb else "c1", "R" if rhombohedral else "H", str(origin)}
+    for h, ch in halls:
+        if ch in want:
+            return h
+    return halls[0][0]
+
+
+def _crystal_sg_atoms(parsed: dict):
+    """Expand ATOMIC_POSITIONS crystal_sg (inequivalent atoms + space_group) to the full conventional cell."""
+    import spglib
+    from ase import Atoms
+    from ase.geometry import cellpar_to_cell
+    from ase.data import chemical_symbols
+    s = parsed["namelists"].get("system", {})
+    sg = int(s["space_group"])
+    uniqueb = bool(s.get("uniqueb", False))
+    origin = int(s.get("origin_choice", 1) or 1)
+    rhombo = bool(s.get("rhombohedral", True))
+    cd = _celldm(parsed)
+    if 1 not in cd:
+        raise ValueError("space_group needs celldm(1) or A")
+    if "a" in s:  # A, B, C, cosAB, cosAC, cosBC given directly: cos(bc), cos(ac), cos(ab) as celldm(4..6)
+        for i, k in ((4, "cosbc"), (5, "cosac"), (6, "cosab")):
+            if k in s:
+                cd[i] = float(s[k])
+        if "cosab" in s and not (sg <= 2):
+            cd[4] = float(s["cosab"])   # monoclinic unique c / rhombohedral: QE reads the single angle from cosAB
+    a = cd[1] * BOHR
+    b = a * cd[2] if cd.get(2) else a
+    c = a * cd[3] if cd.get(3) else a
+    ang = lambda cosv, default: math.degrees(math.acos(cosv)) if cosv else default
+    al = be = ga = 90.0
+    if sg >= 195:                                          # cubic
+        b = c = a
+    elif sg >= 168 or (sg >= 143 and not (rhombo and _hall_is_R(sg))):   # hexagonal axes
+        b, ga = a, 120.0
+    elif sg >= 143:                                        # rhombohedral axes: a and alpha
+        b = c = a
+        al = be = ga = ang(cd.get(4), 60.0)
+    elif sg >= 75:                                         # tetragonal
+        b = a
+    elif sg >= 16:                                         # orthorhombic
+        pass
+    elif sg >= 3:                                          # monoclinic
+        if uniqueb:
+            be = ang(cd.get(5), 90.0)
+        else:
+            ga = ang(cd.get(4), 90.0)
+    else:                                                  # triclinic: celldm(4..6) = cos(bc), cos(ac), cos(ab)
+        al, be, ga = ang(cd.get(4), 90.0), ang(cd.get(5), 90.0), ang(cd.get(6), 90.0)
+    cell = cellpar_to_cell([a, b, c, al, be, ga])
+    sym = spglib.get_symmetry_from_database(_hall_number(sg, uniqueb, origin, rhombo))
+    card = parsed["cards"]["ATOMIC_POSITIONS"]["lines"]
+    labels, frac = [], []
+    for ln in card:
+        p = ln.split()
+        if len(p) < 4 or not all(re.fullmatch(r"[-+0-9.eEdD]+", x) for x in p[1:4]):
+            raise ValueError(f"crystal_sg Wyckoff-letter positions ('{ln.strip()}') are not supported; give x y z")
+        x0 = np.array([float(x.lower().replace("d", "e")) for x in p[1:4]])
+        for R, t in zip(sym["rotations"], sym["translations"]):
+            x = (R @ x0 + t) % 1.0
+            if not any(lb == p[0] and np.allclose(((x - y + 0.5) % 1.0) - 0.5, 0, atol=1e-4)
+                       for lb, y in zip(labels, frac)):
+                labels.append(p[0])
+                frac.append(x)
+    symbols = []
+    for lb in labels:
+        m = re.match(r"([A-Z][a-z]?)", lb.capitalize())
+        symbols.append(m.group(1) if m and m.group(1) in chemical_symbols else "X")
+    atoms = Atoms(symbols=symbols, scaled_positions=np.array(frac), cell=cell, pbc=True)
+    atoms.info["labels"] = labels
+    atoms.info["alat_A"] = float(a)
+    atoms.info["ibrav"] = 0
+    atoms.info["space_group"] = sg
+    return atoms
+
+
+def _hall_is_R(sg: int) -> bool:
+    """True for the rhombohedral (R-centred) trigonal groups, which QE can give on rhombohedral axes."""
+    return sg in (146, 148, 155, 160, 161, 166, 167)
+
+
+def explicit_structure(text: str, atoms=None) -> tuple[str, str | None]:
+    """Rewrite a crystal_sg input as ibrav = 0 with every atom listed (primitive cell), so all tools agree on the cell.
+
+    Returns (text, note); unchanged text and None when the input does not use crystal_sg."""
+    parsed = parse_input(text)
+    pc = parsed["cards"].get("ATOMIC_POSITIONS")
+    if not pc or (pc["option"] or "").lower() != "crystal_sg":
+        return text, None
+    import spglib
+    conv = atoms if atoms is not None else _crystal_sg_atoms(parsed)
+    labels = conv.info["labels"]
+    kinds = sorted(set(labels), key=labels.index)
+    types = [kinds.index(lb) for lb in labels]
+    res = spglib.standardize_cell((conv.cell.array, conv.get_scaled_positions(), types),
+                                  to_primitive=True, no_idealize=False, symprec=1e-4)
+    if res is None:
+        cell, frac, typ = conv.cell.array, conv.get_scaled_positions(), types
+    else:
+        cell, frac, typ = res
+    t = text
+    for k in SG_KEYS + CELL_KEYS:
+        t = remove_param(t, "system", k)
+    t = set_param(t, "system", "ibrav", 0)
+    t = set_param(t, "system", "nat", len(typ))
+    t = replace_card(t, "CELL_PARAMETERS", "CELL_PARAMETERS angstrom\n" +
+                     "\n".join("  " + " ".join(f"{x:15.10f}" for x in v) for v in cell) + "\n")
+    lines = [f"  {kinds[ti]:4s} " + " ".join(f"{x % 1.0:14.10f}" for x in f) for ti, f in zip(typ, frac)]
+    t = replace_card(t, "ATOMIC_POSITIONS", "ATOMIC_POSITIONS crystal\n" + "\n".join(lines) + "\n")
+    note = (f"crystal_sg (space group {conv.info['space_group']}): expanded to {len(conv)} atoms in the conventional "
+            f"cell, {len(typ)} in the primitive cell, written as ibrav = 0 so every step uses the same cell.")
+    return t, note
+
+
 def read_structure(text: str):
-    """Build an ase.Atoms (Angstrom) from a pw.x input, for any ibrav."""
+    """Build an ase.Atoms (Angstrom) from a pw.x input, for any ibrav (and crystal_sg with space_group)."""
     from ase import Atoms
     parsed = parse_input(text) if isinstance(text, str) else text
     s = parsed["namelists"].get("system", {})
+    pc = parsed["cards"].get("ATOMIC_POSITIONS")
+    if pc and (pc["option"] or "").lower() == "crystal_sg":
+        if "space_group" not in s:
+            raise ValueError("ATOMIC_POSITIONS crystal_sg needs space_group in &SYSTEM")
+        return _crystal_sg_atoms(parsed)
     ibrav = int(s.get("ibrav", 0))
     cd = _celldm(parsed)
     if ibrav == 0:
@@ -416,16 +550,46 @@ def pretty_label(lbl: str) -> str:
     return GREEK.get(lbl.upper(), lbl)
 
 
+def vacuum_axes(atoms, min_gap: float = 6.0) -> list[int]:
+    """Cell axes along which the atoms leave an empty gap of at least min_gap Angstrom (slab / wire vacuum)."""
+    if len(atoms) == 0:
+        return []
+    frac = atoms.get_scaled_positions(wrap=True)
+    lengths = atoms.cell.lengths()
+    out = []
+    for i in range(3):
+        f = np.sort(frac[:, i])
+        gaps = np.diff(np.concatenate([f, [f[0] + 1.0]]))
+        # gap measured along the direction normal to the other two axes (true thickness of the empty layer)
+        j, k = [a for a in range(3) if a != i]
+        n = np.cross(atoms.cell[j], atoms.cell[k])
+        height = abs(np.dot(atoms.cell[i], n)) / (np.linalg.norm(n) or 1.0) if lengths[i] else 0.0
+        if gaps.max() * height >= min_gap:
+            out.append(i)
+    return out
+
+
 def make_kpath(atoms, path: str | None = None, density: float = 40.0) -> dict:
     """Build a crystal_b K_POINTS card along a high-symmetry path.
 
     path: ASE notation, e.g. "LGXUG" or "GXWKGLUWLK,UX"; None = ASE default for the lattice.
     density: points per (2pi/alat) unit... measured per 1/Angstrom of path length.
+    Slabs (one axis with a vacuum gap of 6 Angstrom or more) get the 2D lattice's in-plane path.
     Returns dict with card text, special-point labels, their indices in the k list and jumps.
     """
     cell = atoms.cell
-    lat = cell.get_bravais_lattice()
-    bp = cell.bandpath(npoints=0) if not path else cell.bandpath(path=path, npoints=0)
+    vac = vacuum_axes(atoms)
+    pbc = [i not in vac for i in range(3)] if len(vac) == 1 else [True, True, True]
+    try:
+        lat = cell.get_bravais_lattice(pbc=pbc)
+        bp = cell.bandpath(npoints=0, pbc=pbc) if not path else cell.bandpath(path=path, npoints=0, pbc=pbc)
+    except Exception:
+        if not all(pbc):  # fall back to the 3D path if ASE cannot classify the 2D lattice
+            pbc = [True, True, True]
+            lat = cell.get_bravais_lattice()
+            bp = cell.bandpath(npoints=0) if not path else cell.bandpath(path=path, npoints=0)
+        else:
+            raise
     special = bp.special_points  # scaled (crystal) coords for *this* cell
     segments = [seg for seg in re.findall(r"[A-Z][a-z0-9]*|,", bp.path)]
     # group into continuous segments
@@ -469,8 +633,9 @@ def make_kpath(atoms, path: str | None = None, density: float = 40.0) -> dict:
         "jumps": jumps,
         "nks": int(sum(weights[:-1]) + 1),
         "path": bp.path,
-        "lattice": f"{lat.longname} ({lat.name})",
+        "lattice": f"{lat.longname} ({lat.name})" + ("" if all(pbc) else f", 2D: vacuum along {'abc'[vac[0]]}"),
         "special_points": {k: list(map(float, v)) for k, v in special.items()},
+        "vacuum_axis": None if all(pbc) else int(vac[0]),
     }
 
 

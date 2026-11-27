@@ -39,7 +39,8 @@
           <label>Functional <select id="cif-func">
             <option value="pbe">PBE (ultrasoft/PAW)</option>
             <option value="pbe-paw">PBE PAW (for NMR)</option>
-            <option value="lda-nc">LDA norm-conserving (for Raman, UV-Vis)</option></select></label>
+            <option value="lda-nc">LDA norm-conserving (for Raman, UV-Vis)</option>
+            <option value="pbe-so">PBE + spin-orbit (fully relativistic)</option></select></label>
           <label>Material <select id="cif-occ">
             <option value="smearing">metal / unknown (smearing)</option>
             <option value="fixed">insulator / semiconductor (fixed)</option></select></label>
@@ -48,6 +49,9 @@
             <option value="afm">antiferromagnetic (by site label: Ni1 up, Ni2 down)</option>
             <option value="on">spin-polarised (nspin = 2)</option>
             <option value="off">non-magnetic</option></select></label>
+          <label title="auto: Materials Project U for V, Cr, Mn, Fe, Co, Ni, Mo, W in oxides and fluorides. Or type values, e.g. Ni=6.2, Fe=5.3 (eV)">Hubbard U
+            <input id="cif-hub" list="cif-hub-list" value="auto" style="width:110px"></label>
+          <datalist id="cif-hub-list"><option value="auto"><option value="off"><option value="Ni=6.2"></datalist>
           <label>k-spacing <input id="cif-ksp" type="number" value="0.25" step="0.05" min="0.05" style="width:70px"> Å⁻¹</label>
           <label class="chk"><input type="checkbox" id="cif-prim" checked> primitive cell</label>
           <button id="cif-go">Convert</button>

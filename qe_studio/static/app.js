@@ -271,6 +271,7 @@ async function convertCif() {
   fd.append("kspacing", $("#cif-ksp").value);
   fd.append("primitive", $("#cif-prim").checked ? "1" : "0");
   fd.append("spin", $("#cif-spin").value);
+  fd.append("hubbard", $("#cif-hub").value);
   $("#cif-info").textContent = "Converting… (finding pseudopotentials can take a few seconds)";
   $("#cif-msgs").innerHTML = "";
   let r;
@@ -278,7 +279,7 @@ async function convertCif() {
   catch (e) { $("#cif-info").textContent = ""; $("#cif-msgs").innerHTML = `<div class="msg error"><span class="ic">✕</span><span>${esc(e.message)}</span></div>`; return; }
   const i = r.info;
   $("#cif-info").innerHTML = `${esc(i.formula)} · ${i.natoms} atoms${i.natoms !== i.natoms_cif ? ` (reduced from ${i.natoms_cif})` : ""}` +
-    `${i.spacegroup ? ` · space group ${esc(i.spacegroup)}` : ""} · ecutwfc ${i.ecutwfc} / ecutrho ${i.ecutrho} Ry · k-grid ${i.kgrid.join("×")}${i.spin ? ` · ${esc(i.spin)}` : ""}<br>` +
+    `${i.spacegroup ? ` · space group ${esc(i.spacegroup)}` : ""} · ecutwfc ${i.ecutwfc} / ecutrho ${i.ecutrho} Ry · k-grid ${i.kgrid.join("×")}${i.spin ? ` · ${esc(i.spin)}` : ""}${i.hubbard && i.hubbard !== "none" ? ` · ${esc(i.hubbard)}` : ""}<br>` +
     Object.entries(i.pseudos).map(([el, n]) => `${esc(el)}: ${n ? esc(n) : "<b>none found</b>"}`).join(" · ");
   $("#cif-msgs").innerHTML = r.warnings.map((m) => `<div class="msg warn"><span class="ic">!</span><span>${esc(m)}</span></div>`).join("");
   editor.value = r.text;
@@ -294,7 +295,7 @@ function startCif(name, text) {
   convertCif();
 }
 $("#cif-go").addEventListener("click", convertCif);
-["#cif-func", "#cif-occ", "#cif-prim", "#cif-spin"].forEach((s) => $(s).addEventListener("change", convertCif));
+["#cif-func", "#cif-occ", "#cif-prim", "#cif-spin", "#cif-hub"].forEach((s) => $(s).addEventListener("change", convertCif));
 $("#cif-save").addEventListener("click", () => {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([editor.value], { type: "text/plain" }));
@@ -504,7 +505,8 @@ function renderResults(st) {
       : S.fermi_nscf_ev !== null && S.fermi_nscf_ev !== undefined
         ? tile("Fermi energy", `${fmt(S.fermi_nscf_ev, 3)} <small>eV</small>`, `dense NSCF grid (used in plots) · SCF grid ${fmt(S.fermi_ev, 3)} eV · ${esc(S.occupations)}`)
         : tile("Fermi energy", `${fmt(S.fermi_ev, 3)} <small>eV</small>`, esc(S.occupations)),
-    tile("SCF", `${S.scf_iterations ?? "–"} <small>iterations</small>`, `${fmt(S.wall_s, 1)} s wall · ${S.mpi_procs || 1} MPI · QE ${esc(S.qe_version)}`),
+    tile("SCF", `${S.scf_iterations ?? "–"} <small>iterations</small>`, `${fmt(S.wall_s, 1)} s wall · ${S.mpi_procs || 1} MPI · QE ${esc(S.qe_version)}` +
+      (S.hubbard && S.hubbard.length ? `<br>DFT+U: ${esc(S.hubbard.map((h) => h.replace(/^U\s+/, "")).join(", "))}` : "")),
     tile("Pressure", `${fmt(S.pressure_kbar, 2)} <small>kbar</small>`, `total force ${fmt(S.total_force, 5)} Ry/bohr`),
     ...(S.total_mag !== null && S.total_mag !== undefined ? [tile(
       S.magnetic_order && S.magnetic_order !== "non-magnetic" ? `Magnetisation · ${S.magnetic_order}` : "Magnetisation",
@@ -738,8 +740,11 @@ function renderUV(R) {
     ? `Metal: interband transitions plus a Drude term for the free carriers (plasma energy from the electron velocities at E_F, ` +
       `damping ${fmt(m.drude_gamma_ev, 2)} eV = the broadening). ε₁ is large and negative below the plasma edge, so the metal reflects strongly there. ` +
       "Independent-particle approximation; the damping is a model parameter, not calculated."
-    : "Independent-particle approximation (no excitons, no local fields; the nonlocal-pseudopotential commutator is left out, " +
-      "which tends to overestimate ε by 10–20%). LDA/GGA underestimate band gaps, so the onset is red-shifted unless a scissor shift is used.";
+    : "Independent-particle approximation (no excitons, no local fields). " +
+      (m.nonlocal === "included" ? "Velocity matrix elements include the nonlocal-pseudopotential term. "
+        : m.nonlocal ? `Nonlocal-pseudopotential term not included (${m.nonlocal}): ε is overestimated by about 10–20%. `
+        : "Nonlocal-pseudopotential term not included (older run): ε is overestimated by about 10–20%. ") +
+      "LDA/GGA underestimate band gaps, so the onset is red-shifted unless a scissor shift is used.";
 }
 /* ------------------------------------------------------------------ NMR */
 const nmrRef = (el) => { const v = localStorage.getItem("qe-nmr-ref-" + el); return v === null || v === "" ? null : Number(v); };

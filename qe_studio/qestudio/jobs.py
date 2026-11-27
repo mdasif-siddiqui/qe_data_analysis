@@ -406,6 +406,42 @@ def relax_input(text: str, mode: str, outdir: str) -> str:
     return t
 
 
+def _spacegroup(cell, positions, types, symprec: float) -> str | None:
+    import spglib
+    frac = np.linalg.solve(np.asarray(cell).T, np.asarray(positions).T).T
+    ds = spglib.get_symmetry_dataset((np.asarray(cell), frac, types), symprec=symprec)
+    return f"{ds.international} ({ds.number})" if ds is not None else None
+
+
+def _symmetrize_relaxed(before, cell, positions, refine: bool = True) -> dict:
+    """Space group before / after relaxation, and the relaxed structure symmetrized to within 1e-3 A.
+
+    Atoms are told apart by their species label (Ni1 / Ni2 of an antiferromagnet stay different)."""
+    from ase import Atoms
+    from ase.spacegroup.symmetrize import refine_symmetry
+    labels = before.info.get("labels") or before.get_chemical_symbols()
+    kinds = sorted(set(labels), key=labels.index)
+    types = [kinds.index(lb) + 1 for lb in labels]
+    out = {"spacegroup_input": None, "spacegroup_relaxed": None, "spacegroup_final": None,
+           "symmetrized": False, "cell": None, "positions": None}
+    try:
+        out["spacegroup_input"] = _spacegroup(before.cell.array, before.positions, types, 1e-3)
+        out["spacegroup_relaxed"] = _spacegroup(cell, positions, types, 1e-5)
+        if not refine:
+            out["spacegroup_final"] = out["spacegroup_relaxed"]
+            return out
+        a = Atoms(numbers=types, positions=positions, cell=cell, pbc=True)
+        refine_symmetry(a, symprec=1e-3)
+        out["spacegroup_final"] = _spacegroup(a.cell.array, a.positions, types, 1e-5)
+        out["symmetrized"] = out["spacegroup_final"] != out["spacegroup_relaxed"] or \
+            float(np.abs(a.positions - positions).max()) > 1e-8
+        out["max_shift_A"] = float(np.abs(a.positions - positions).max())
+        out["cell"], out["positions"] = a.cell.array, a.positions
+    except Exception as e:  # symmetry analysis is a refinement only: never stop the pipeline for it
+        out["symmetry_error"] = str(e)
+    return out
+
+
 def relaxed_input(text: str, out: Path, mode: str) -> tuple[str, dict]:
     """The scf input with the final structure of a relax/vc-relax run (last structure if it did not converge).
 
@@ -421,13 +457,27 @@ def relaxed_input(text: str, out: Path, mode: str) -> tuple[str, dict]:
         for k in keys:
             t = qein.remove_param(t, nl, k)
     cell = final.cell.array if mode == "vc-relax" else before.cell.array
+    positions = final.positions
+    # Re-detect the symmetry: numerical noise from BFGS can break it slightly (more k-points, wrong k-path labels).
+    # Symmetrize to within 1e-3 A; a real symmetry change larger than that is kept and reported.
+    card0 = parsed["cards"]["ATOMIC_POSITIONS"]["lines"]
+    has_flags = any(len(ln.split()) >= 7 for ln in card0)
+    sym = _symmetrize_relaxed(before, cell, positions, refine=not has_flags)
+    if sym.get("cell") is not None:
+        cell_r, positions = sym.pop("cell"), sym.pop("positions")
+        if mode == "vc-relax":
+            cell = cell_r
+        else:                               # fixed-cell relax: keep the input cell exactly, same fractional positions
+            positions = np.linalg.solve(cell_r.T, positions.T).T @ before.cell.array
+    else:
+        sym.pop("cell", None), sym.pop("positions", None)
     if mode == "vc-relax":
         t = qein.set_param(t, "system", "ibrav", 0)
         for k in ["A", "B", "C", "cosAB", "cosAC", "cosBC"] + [f"celldm({i})" for i in range(1, 7)]:
             t = qein.remove_param(t, "system", k)
         t = qein.replace_card(t, "CELL_PARAMETERS", "CELL_PARAMETERS angstrom\n" +
                               "\n".join("  " + " ".join(f"{x:15.10f}" for x in v) for v in cell) + "\n")
-    frac = np.linalg.solve(cell.T, final.positions.T).T % 1.0
+    frac = np.linalg.solve(np.asarray(cell).T, np.asarray(positions).T).T % 1.0
     frac[np.isclose(frac, 1.0, atol=1e-9)] = 0.0
     card = parsed["cards"]["ATOMIC_POSITIONS"]["lines"]
     lines = []
@@ -449,7 +499,7 @@ def relaxed_input(text: str, out: Path, mode: str) -> tuple[str, dict]:
                "abc_before": [float(x) for x in before.cell.lengths()], "abc_after": [float(x) for x in np.linalg.norm(cell, axis=1)],
                "pressure_kbar_first": float(p[0]) if p else None, "pressure_kbar": float(p[-1]) if p else None,
                "force_first": float(f[0]) if f else None, "force": float(f[-1]) if f else None,
-               "energy_change_ry": None}
+               "energy_change_ry": None, **sym}
     e = re.findall(r"^!\s+total energy\s+=\s+([-\d.]+)", out_text, re.M)
     if len(e) >= 2:
         summary["energy_change_ry"] = float(e[-1]) - float(e[0])
@@ -457,6 +507,14 @@ def relaxed_input(text: str, out: Path, mode: str) -> tuple[str, dict]:
 
 
 # --------------------------------------------------------------------------- pipeline
+def _diag_failed(out: Path) -> bool:
+    """pw.x stopped because Davidson left bands unconverged (common for non-collinear / spin-orbit bands)."""
+    try:
+        return "too many bands are not converged" in out.read_text(errors="replace")
+    except OSError:
+        return False
+
+
 def _check(job: Job, step: str, out: Path, rc: int, required=True) -> bool:
     text = out.read_text(errors="replace") if out.exists() else ""
     ok = "JOB DONE" in text
@@ -533,6 +591,10 @@ def run_pipeline(mgr: Manager, job: Job):
         calc = str(qein.get(parsed, "control", "calculation", "scf")).lower()
         if calc != "scf":       # relax/vc-relax run in their own step; scf.in then gets the relaxed structure
             t = qein.set_param(t, "control", "calculation", "scf")
+        t, sg_note = qein.explicit_structure(t)   # crystal_sg -> explicit ibrav = 0 cell used by every step
+        if sg_note:
+            job.log(sg_note)
+            results["structure_note"] = sg_note
         scf_in.write_text(t)
         names = [s["pseudo"] for s in qein.species_list(parsed)]
         extra = []
@@ -603,6 +665,10 @@ def run_pipeline(mgr: Manager, job: Job):
             (d / "bands.in").write_text(t)
             (d / "kpath.json").write_text(json.dumps(kp, indent=1))
             rc = mgr.run(job, "pw.x", d / "bands.in", d / "bands.out", np_)
+            if _diag_failed(d / "bands.out"):
+                job.log("bands: Davidson left bands unconverged; retrying with diagonalization = 'cg'")
+                (d / "bands.in").write_text(qein.set_param(t, "electrons", "diagonalization", "cg"))
+                rc = mgr.run(job, "pw.x", d / "bands.in", d / "bands.out", np_)
             _check(job, "bands", d / "bands.out", rc)
             return kp
         kp = _timed(job, "bands", bands)
@@ -635,6 +701,10 @@ def run_pipeline(mgr: Manager, job: Job):
             t = qein.replace_card(t, "K_POINTS", "K_POINTS automatic\n  {} {} {} 0 0 0\n".format(*grid))
             (d / "nscf.in").write_text(t)
             rc = mgr.run(job, "pw.x", d / "nscf.in", d / "nscf.out", np_)
+            if _diag_failed(d / "nscf.out"):
+                job.log("nscf: Davidson left bands unconverged; retrying with diagonalization = 'cg'")
+                (d / "nscf.in").write_text(qein.set_param(t, "electrons", "diagonalization", "cg"))
+                rc = mgr.run(job, "pw.x", d / "nscf.in", d / "nscf.out", np_)
             _check(job, "nscf", d / "nscf.out", rc)
             results["nscf_grid"] = grid
         ok_nscf = True
@@ -1195,6 +1265,23 @@ def _magnetic_order(scf: dict) -> str | None:
     return "ferromagnetic"
 
 
+def _hubbard_of(parsed: dict) -> list[str] | None:
+    """['U Ni1-3d 6.2', ...] from the HUBBARD card (QE >= 7.1), or Hubbard_U(i) of the old syntax."""
+    card = parsed["cards"].get("HUBBARD")
+    if card:
+        return [" ".join(ln.split()[:3]) + " eV" for ln in card["lines"] if ln.split()]
+    s = parsed["namelists"].get("system", {})
+    old = {k: v for k, v in s.items() if k.lower().startswith("hubbard_u(") and float(v or 0) > 0}
+    if old:
+        names = [sp["label"] if "label" in sp else sp.get("name", "?") for sp in qein.species_list(parsed)]
+        out = []
+        for k, v in old.items():
+            i = int(re.search(r"\((\d+)\)", k).group(1))
+            out.append(f"U {names[i - 1] if i <= len(names) else i} {float(v):g} eV")
+        return out
+    return None
+
+
 def analyse_job(job: Job) -> dict:
     d = job.dir
     res: dict = {"id": job.id}
@@ -1229,6 +1316,7 @@ def analyse_job(job: Job) -> dict:
         "magnetic_order": _magnetic_order(scf),
         "nks": scf.get("nks"), "ecutwfc": scf.get("ecutwfc"), "ecutrho": scf.get("ecutrho"),
         "xc": scf.get("xc"), "mpi_procs": scf.get("mpi_procs"), "occupations": occ,
+        "hubbard": _hubbard_of(parsed),
     }
     # gap from the SCF grid
     sb = qeout.bands_from_pw(scf)
@@ -1392,6 +1480,20 @@ def analyse_job(job: Job) -> dict:
                + ". All results below are for the relaxed structure (scf.in).")
         checks.append({"level": "info" if rx.get("converged") else "warn",
                        "msg": msg if rx.get("converged") else msg + " The relaxation did NOT converge: the last structure was used."})
+        sg_in, sg_rx, sg_f = rx.get("spacegroup_input"), rx.get("spacegroup_relaxed"), rx.get("spacegroup_final")
+        if sg_in and sg_f:
+            if sg_f != sg_in:
+                checks.append({"level": "warn", "msg": (
+                    f"Space group changed during the relaxation: {sg_in} → {sg_f}"
+                    + (f" (BFGS gave {sg_rx})" if sg_rx and sg_rx != sg_f else "")
+                    + ". The atoms moved more than 0.001 Å away from the input symmetry: a real distortion, or a "
+                      "structure that started away from a minimum. Check the relaxed structure before trusting it.")})
+            elif rx.get("symmetrized") and sg_rx != sg_f:
+                checks.append({"level": "info", "msg": (
+                    f"Symmetry restored after the relaxation: BFGS noise had lowered it to {sg_rx}; the structure was "
+                    f"symmetrized back to {sg_f} (atoms moved by at most {rx.get('max_shift_A', 0):.1e} Å).")})
+            else:
+                checks.append({"level": "info", "msg": f"Space group kept during the relaxation: {sg_f}."})
     if res.get("projwfc", {}).get("spilling") and res["projwfc"]["spilling"] > 0.05:
         checks.append({"level": "info", "msg": f"PDOS spilling parameter {res['projwfc']['spilling']:.3f}: projections are approximate."})
     # metals: a Fermi level that moves on the denser NSCF grid means the SCF k-grid is not converged

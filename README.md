@@ -116,18 +116,29 @@ If a message isn't listed here, copy the full text from the console window.
 QE Studio works with any pw.x `scf.in`, not just the silicon example:
 
 - **Any crystal structure:** every `ibrav`, `celldm` or `A, B, C`, or your own `CELL_PARAMETERS`.
+- **Space-group inputs** (`space_group` + `ATOMIC_POSITIONS crystal_sg`): the inequivalent atoms are expanded with
+  the space group's operations (spglib, including `uniqueb`, `origin_choice` and `rhombohedral`) and the run uses
+  the primitive cell with explicit positions (`ibrav = 0`); the run log says so. Si gives the same energy as QE's own
+  expansion. Wyckoff letters instead of x y z are not supported.
 - **Relaxation first** (option **relax first** under SCF: `relax` for atom positions, `vc-relax` for positions and
   cell): a `pw.x` relaxation runs before everything else, with thresholds tight enough for phonons (forces
   < 10⁻⁴ Ry/bohr, pressure < 0.5 kbar). Its final structure is written into the run's `scf.in` (`ibrav = 0`, cell in Å,
   crystal positions; fixed-atom flags kept), and SCF, bands, DOS, phonons, IR & Raman, UV-Vis and NMR all use it.
-  The run page reports how the cell, forces and pressure changed. An input that is itself `calculation = 'relax'` or
+  The run page reports how the cell, forces and pressure changed, and the space group before and after. Numerical
+  noise that breaks the symmetry (atoms moved by less than about 10⁻³ Å) is removed so that the original space
+  group is restored; a real symmetry change is kept and reported as a warning. An input that is itself `calculation = 'relax'` or
   `'vc-relax'` is handled the same way. Recommended for phonons and IR & Raman; the app reminds you when they are ticked.
 - **Any elements:** pseudopotentials named in `ATOMIC_SPECIES` are downloaded from the official QE library when they exist
   there; otherwise upload your own `.UPF` files together with the input (SSSP, PSlibrary, …).
 - **Semiconductors and insulators:** band gap, direct or indirect, with the VBM/CBM positions.
 - **Metals** (`occupations = 'smearing'`): detected from bands crossing the Fermi level; plots use E_F = 0.
 - **Magnetic materials** (`nspin = 2`): spin-up and spin-down bands and DOS, plus the magnetisation.
-- **High-symmetry k-path:** chosen automatically for the lattice type, or entered by hand (e.g. `GXMGR`).
+- **DFT+U:** a `HUBBARD` card (QE 7 format) or the older `Hubbard_U` keywords are used as given and listed in the
+  SCF tile. The CIF converter can add it (see below).
+- **Spin-orbit coupling** (`noncolin`, `lspinorb`, fully relativistic pseudopotentials): bands and DOS, tested with
+  GaAs. If Davidson leaves bands unconverged in the band or NSCF step, it is rerun with the CG solver.
+- **High-symmetry k-path:** chosen automatically for the lattice type, or entered by hand (e.g. `GXMGR`). Slabs and
+  2D layers (an empty gap of at least 6 Å along one axis) get the 2D path, e.g. Γ–M–K–Γ for graphene.
 - **Convergence tests** (tick **Convergence tests**): SCF runs at 0.5×, 0.75×, 1×, 1.25×, 1.5× and 2× your ecutwfc
   (same ecutrho/ecutwfc ratio) and on your k-grid scaled by ¼× to 1.5× (your own grid is always one of the points; a
   direction with one k-point, such as a slab's vacuum direction, stays at 1). Energy and pressure differences to the
@@ -135,6 +146,7 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
   lists can be given instead.
 - **Phonons** (optional, tick **Phonons**): DFPT with `ph.x` on a q-grid (default 4×4×4), then `q2r.x` and `matdyn.x`.
   - **Dispersion** along the same path as the bands, with the phonon DOS beside it (per element), in cm⁻¹, THz or meV.
+    For insulators it includes the LO–TO splitting at Γ (ph.x computes ε∞ and Born charges, matdyn.x applies them).
   - **Stability check:** warns about imaginary frequencies and large acoustic-sum-rule corrections.
   - **Frequencies at Γ** in a table, before and after the acoustic sum rule.
   - **Harmonic thermodynamics** summed over the phonon modes on a dense q-mesh: zero-point energy, heat capacity
@@ -149,8 +161,9 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
     so rounded CIF values such as `0.33333` become exactly 1/3. A setting suffix on the space-group symbol
     (`F d -3 m :2` for origin choice 2, `R -3 m :R` for rhombohedral axes) is applied when the CIF lists no symmetry
     operations.
-  - **Pseudopotentials:** chosen and downloaded from the QE library, either **PBE** (ultrasoft/PAW, PSlibrary) or
-    **LDA norm-conserving** (needed for Raman and UV-Vis). Cutoffs come from the pseudopotentials' own recommendations,
+  - **Pseudopotentials:** chosen and downloaded from the QE library, either **PBE** (ultrasoft/PAW, PSlibrary),
+    **LDA norm-conserving** (needed for Raman and UV-Vis), or **PBE + spin-orbit** (fully relativistic PSlibrary
+    files; adds `noncolin` and `lspinorb`, and turns spin polarisation off). Cutoffs come from the pseudopotentials' own recommendations,
     except that norm-conserving B, C, N, O and F get at least 100 Ry (their files suggest too little).
   - **k-grid** from a target spacing (default 0.25 Å⁻¹), with fixed occupations or smearing.
   - **Editing:** the generated input appears in the editor to adjust, and **Save scf.in** downloads it.
@@ -162,6 +175,9 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
     makes each CIF site label of a magnetic element its own species (Ni1, Ni2, …) with alternating starting
     moments (+, −, …), so the CIF must describe the magnetic cell with one label per spin sublattice (see the NiO
     example). The magnetic cell is kept, not reduced to the smaller chemical cell.
+  - **Hubbard U:** *auto* (default) adds DFT+U to V, Cr, Mn, Fe, Co, Ni, Mo and W d states when the structure contains
+    O or F (oxides and fluorides; U from common values, e.g. Ni 6.2, Fe 5.3, Mn 3.9 eV); *off* never adds it; or give
+    values yourself, e.g. `Ni=6.2, Fe=5`. A warning names what was added.
 - **Magnetic order:** after the SCF the moment on each site is read, and the run is labelled non-magnetic,
   ferromagnetic, antiferromagnetic or ferrimagnetic (shown in the Magnetisation tile with the per-site moments).
 - **IR & Raman spectra** (tick **IR & Raman**): `ph.x` at Γ with the dielectric tensor and Born effective charges
@@ -175,6 +191,8 @@ QE Studio works with any pw.x `scf.in`, not just the silicon example:
   - **Shown:** ε₁ and ε₂, the absorption coefficient against wavelength (UV and visible ranges), refractive index and
     extinction n and k, reflectivity, the absorption onset, and n at 589 nm.
   - **Scissor shift:** optional, corrects the too-small LDA/GGA gap.
+  - **Nonlocal term:** the velocity matrix elements include the commutator with the nonlocal pseudopotential, built
+    from the UPF projectors (silicon ε∞ 16.2 → 13.8, diamond 6.7 → 5.9). The run page says whether it was included.
   - **Quality check:** the f-sum rule is reported as a measure of whether enough empty bands were included.
   - **Metals** (smearing, states at E_F): a Drude term for the free carriers is added, with the plasma frequency
     computed from the electron velocities at E_F. The tiles then show the Drude plasma energy, the plasma edge, and
@@ -289,8 +307,10 @@ about 3 minutes on 4 cores.
 | n at 589 nm | 2.59 | 2.27 | 2.417 |
 | Main ε₂ peak (E2) | 11.8 eV | 13.5 eV | ≈ 12.2 eV |
 
+- **Update:** this table was made before the nonlocal-pseudopotential term was added to the velocity matrix
+  elements. With it, ε∞ drops by 13% (6.72 → 5.87 on a 12×12×12 grid; Si 16.2 → 13.8), close to the measured 5.7.
 - **Reading the results:** without a scissor, ε∞ and n are 7–13% too high (the expected overestimate of this
-  approximation, see Limitations). The scissor (measured direct gap − LDA direct gap = 1.7 eV) puts the absorption
+  approximation without the nonlocal term). The scissor (measured direct gap − LDA direct gap = 1.7 eV) puts the absorption
   edge in the right place but makes ε∞ slightly too low and pushes the main peak too high. The measured values lie
   between the two runs.
 - **f-sum rule 77%:** 16 bands are a little few for a spectrum up to 20 eV; more empty bands would raise it.
@@ -338,7 +358,7 @@ comparison the same structure was also converted with **Spin: auto** (ferromagne
 
 - **Accuracy:** the order, its stability and the ≈ 1.4 μB moment are what plain PBE gives for NiO. The moment
   is too small and the gap far too small, because PBE does not localise Ni 3d electrons enough; DFT+U (U ≈ 5–6 eV)
-  is needed for a realistic gap and moment, and is not set up by the converter.
+  is needed for a realistic gap and moment (now set up by the converter, see the next test).
 - **Fixes from this test:**
   - The converter could not start an antiferromagnet: all Ni atoms were one species, and the symmetry reduction
     merged Ni1 and Ni2 into the 2-atom chemical cell. The new *antiferromagnetic* spin option keeps them apart.
@@ -346,6 +366,55 @@ comparison the same structure was also converted with **Spin: auto** (ferromagne
     magnetic order, and shows both in the Magnetisation tile ("Ni1 +1.37, Ni2 −1.37 μB per site").
 - **Shown in the app:** spin-up and spin-down bands lie on top of each other, as they must for an antiferromagnet;
   the PDOS shows Ni d states at the top of the valence band.
+
+## Test: NiO with DFT+U
+
+The same [NiO CIF](qe_studio/examples/NiO_AFM-II.cif) was converted again with **Spin: antiferromagnetic** and
+**Hubbard U: auto**, which adds `HUBBARD (ortho-atomic)` with `U Ni1-3d 6.2` and `U Ni2-3d 6.2` (the converter's
+default U for Ni in an oxide). Bands, DOS and PDOS were run (SCF 18 minutes, the whole job about 2.5 hours on 4 cores).
+
+| | PBE | PBE+U (U = 6.2 eV) | Measured |
+|---|---|---|---|
+| Ni moment | ±1.37 μB | ±1.68 μB | 1.64–1.9 μB |
+| Band gap | 0.86 eV | 3.13 eV indirect (Z → Γ), 3.83 eV direct | ≈ 4.0–4.3 eV |
+| Magnetic order | antiferromagnetic | antiferromagnetic | antiferromagnetic |
+
+- **Accuracy:** the moment is now within the measured range, and the gap is the ≈ 3 eV that PBE+U normally gives
+  for NiO at this U; the rest of the difference to experiment is beyond DFT+U.
+- **Shown in the app:** the SCF tile lists "DFT+U: Ni1-3d 6.2 eV, Ni2-3d 6.2 eV".
+
+## Test: LO–TO splitting of GaAs phonons
+
+GaAs (`Ga.pz-bhs`, `As.pz-bhs`, 50 Ry, LDA) was run with **relax first: vc-relax** and **Phonons** on a 4×4×4
+q-grid (about 25 minutes on 4 cores). For an insulator ph.x also computes ε∞ and the Born charges, q2r.x writes them
+into the force constants, and matdyn.x adds the non-analytic (LO–TO) term, so the dispersion shows the splitting at Γ.
+
+| | QE Studio | Measured |
+|---|---|---|
+| Lattice constant (vc-relax) | 5.547 Å | 5.653 Å |
+| TO at Γ | 275.2 cm⁻¹ | 268 cm⁻¹ |
+| LO at Γ | 294.0 cm⁻¹ | 292 cm⁻¹ |
+| ε∞ | 13.2 | 10.9 |
+| Born charge Z* | +2.02 (Ga), −2.19 (As) | ±2.07 |
+
+- **Accuracy:** typical for LDA, which overestimates ε∞ (giving a slightly smaller LO–TO splitting) and shrinks the
+  lattice. The earlier README entry saying the dispersion had no LO–TO splitting was wrong.
+- **Symmetry:** the app reports "Space group kept during the relaxation: F-43m (216)".
+
+## Test: GaAs with spin-orbit coupling
+
+[qe_studio/examples/GaAs.cif](qe_studio/examples/GaAs.cif) was converted with **PBE + spin-orbit (fully
+relativistic)** (`Ga.rel-pbe-dn-rrkjus_psl`, `As.rel-pbe-n-rrkjus_psl`, 60 / 480 Ry, 8×8×8), which sets
+`noncolin` and `lspinorb`, then run with bands and DOS (about 35 minutes on 4 cores).
+
+| | QE Studio | Measured |
+|---|---|---|
+| Spin-orbit split-off Δ_SO at Γ | 0.337 eV | 0.341 eV |
+| Band gap | 0.40 eV, direct at Γ | 1.52 eV |
+
+- **Accuracy:** Δ_SO agrees within 1%. The gap is the usual PBE underestimate.
+- **Fix from this test:** the band and NSCF steps stopped with "too many bands are not converged" (Davidson, common
+  for non-collinear runs). They are now rerun automatically with `diagonalization = 'cg'`.
 
 ## Test: UV-Vis of aluminium (metal) from a CIF
 
@@ -424,48 +493,54 @@ energies agree to all digits with the SCF runs made by hand for the IR & Raman t
 
 ## Limitations
 
+What is left is either outside what these QE programs calculate or simply not tested yet.
+
 - **Testing so far:** silicon (semiconductor) and aluminium (metal) have been run end to end; both are built-in
-  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman, convergence tests) and diamond (UV-Vis, phonons), aluminium (UV-Vis of a metal) , bcc iron (ferromagnet) and NiO (antiferromagnet) were run end
-  to end from CIFs (see above). Input reading was also checked for a hexagonal 2D slab and for GaAs with `ibrav = 0`.
-  Other materials should work but are not yet tested; check the first results critically.
-- **No DFT+U:** strongly correlated oxides (NiO, MnO, CoO, …) get a far too small gap from plain PBE. Add
-  `lda_plus_u` / a `HUBBARD` card to the input by hand if you need it.
+  examples. α-quartz and LiF/NaF (NMR), wurtzite AlN (IR & Raman, convergence tests), diamond (UV-Vis, phonons),
+  aluminium (UV-Vis of a metal), bcc iron (ferromagnet), NiO (antiferromagnet, DFT+U) and GaAs (spin-orbit) were run
+  end to end from CIFs, and GaAs phonons (LO–TO) from an input file (see above). Space-group inputs, 2D k-paths and
+  symmetry restoration after a relaxation were checked on Si, corundum, graphene and AlN. Other materials should work
+  but are not yet tested; check the first results critically.
+- **Large systems:** on a 4-core laptop, more than about 20–30 atoms or high cutoffs take from many minutes to hours
+  (NiO+U with 4 atoms: about 2.5 hours for SCF, bands and DOS).
 - **Metals need dense k-grids.** The aluminium example's 12×12×12 grid is deliberately not converged: the app warns
   that E_F moves by +130 meV on the denser NSCF grid and that the convergence tests did not converge.
-- **2D materials / slabs:** the automatic k-path includes points along the vacuum direction. Enter the in-plane
-  path yourself, e.g. `GMKG` for a hexagonal layer.
-- **Relaxation:** the relaxed structure is used as it is; there is no symmetry re-detection or re-standardization
-  afterwards. A relaxation that does not converge within 100 steps is reported, and its last structure is used.
-- **Spin-orbit / non-collinear** (`noncolin`, `lspinorb`): basic support only, the least tested part.
-- **Large systems:** on a 4-core laptop, more than about 20–30 atoms or high cutoffs take from many minutes to hours.
+- **DFT+U:** the converter's default U values are common literature values, not computed for your material
+  (QE's `hp.x` can do that, but is not run). U is added only to transition metals in oxides and fluorides.
+- **Spin-orbit:** the converter's **PBE + spin-orbit** option is for non-magnetic materials; magnetic non-collinear
+  runs (spin-orbit plus magnetism) need a hand-written input and are untested.
+- **Space-group inputs:** positions must be given as x y z; Wyckoff letters are not supported.
+- **Relaxation:** a relaxation that does not converge within 100 steps is reported, and its last structure is used.
+  Symmetry is restored only when the distortion is below about 10⁻³ Å, and not when atoms have fixed-position flags.
 - **Phonons:**
-  - **Physics not included:** the phonon dispersion has no LO–TO splitting, so optical branches near Γ of polar
-    materials (e.g. GaAs, NaCl) are not fully correct; the **IR & Raman** option does give the LO and TO frequencies
-    at Γ. No anharmonic effects or thermal expansion.
+  - **Physics not included:** harmonic only, so no anharmonic effects, phonon lifetimes or thermal expansion (these
+    need methods beyond DFPT, e.g. quasi-harmonic or third-order force constants).
+  - **LO–TO** splitting is included for insulators only; metals have none, as expected physically.
   - **Inputs:** phonons need a relaxed structure (zero forces) and tight convergence; the app runs its own SCF with
-    `conv_thr` ≤ 1e-12.
-  - **Relax first:** choose **relax first: vc-relax** (or give an input that is already relaxed with the same
+    `conv_thr` ≤ 1e-12. Choose **relax first: vc-relax** (or give an input that is already relaxed with the same
     pseudopotentials and cutoff).
-  - **Testing:** silicon and diamond (from a CIF, see above).
+  - **Testing:** silicon, diamond (from a CIF) and GaAs (see above).
 - **IR & Raman:**
-  - **Insulators only** (`occupations = 'fixed'`).
+  - **Insulators only** (`occupations = 'fixed'`), because ph.x computes ε∞ and Born charges only for them.
   - **Raman** also needs LDA with norm-conserving pseudopotentials (a ph.x restriction); otherwise only IR is calculated.
   - **Spectra:** harmonic, at Γ only, with no two-phonon or anharmonic features.
   - **Testing:** done with GaAs (TO 258 / LO 274 cm⁻¹ in LDA vs 268 / 292 measured) and wurtzite AlN from a CIF
     (within 1–2% of measured, see above).
   - **Relax first:** choose **relax first: vc-relax**; at the experimental lattice frequencies can be off by 10%.
 - **UV-Vis:**
-  - **Approximation:** independent-particle, so no excitons and no local-field effects.
-  - **Accuracy:** the nonlocal-pseudopotential commutator is left out, which overestimates ε by about 10–20% (silicon:
-    ε∞ = 16.2 vs about 14 in full LDA calculations, 11.7 measured; diamond: 6.47 vs 5.7 measured).
+  - **Approximation:** independent-particle, so no excitons and no local-field effects. These need the
+    Bethe–Salpeter equation (e.g. Yambo), which is outside QE; they matter most for wide-gap insulators.
   - **Band gaps:** LDA/GGA red-shift the absorption edge; use the scissor shift.
   - **Requirements:** norm-conserving pseudopotentials and QE's HDF5 wavefunctions (the conda-forge build has them).
+  - **Nonlocal term:** included for norm-conserving UPF files, but not for non-collinear (spin-orbit) runs.
   - **Why not epsilon.x:** QE's own `epsilon.x` is not used; in this build it gives k-grid-dependent spectra that are
     several times too large.
-  - **Metals:** the Drude damping is not calculated (it equals the broadening), so visible absorption and n of metals
-    are only qualitative; the plasma edge and ε₁ are more reliable. Tested with aluminium.
+  - **Metals:** the Drude damping is not calculated (it equals the broadening; computing it needs electron–phonon
+    scattering), so visible absorption and n of metals are only qualitative; the plasma edge and ε₁ are more
+    reliable. Tested with aluminium.
+  - **Spin-polarised** UV-Vis is untested.
 - **NMR:**
-  - **Insulators only** (`occupations = 'fixed'`). Knight shifts of metals are not calculated.
+  - **Insulators only** (`occupations = 'fixed'`). Knight shifts of metals are not calculated; NMR of magnetic systems is untested.
   - **Pseudopotentials:** they must carry GIPAW data. PSlibrary **PAW** files work. PSlibrary ultrasoft files contain
     GIPAW sections with zero radii that `gipaw.x` rejects, and norm-conserving `pz-vbc`/`bhs` files have none; the app
     checks this and explains.
@@ -477,8 +552,7 @@ energies agree to all digits with the SCF runs made by hand for the IR & Raman t
     CG solver, which takes several times longer (NaF: 13 instead of about 3 minutes).
   - **Build patches:** `build_gipaw.sh` fixes three malformed Fortran format strings in QE-GIPAW 7.6 that make recent
     gfortran stop at the end of a run.
-- **Other QE programs** (`cp.x`, `neb.x`, `pp.x`, …) are not supported.
-- **`ATOMIC_POSITIONS crystal_sg`** is not supported by the structure viewer.
-- **Spin-polarised or non-collinear** UV-Vis, and NMR of magnetic systems, are untested.
+- **Other QE programs** (`cp.x` molecular dynamics, `neb.x` reaction paths, `pp.x` charge densities, …) are not
+  supported; they need different workflows and plots.
 
 See [qe_studio/README.md](qe_studio/README.md) for how the app works.

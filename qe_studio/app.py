@@ -183,7 +183,8 @@ def convert_cif():
                            primitive=request.form.get("primitive", "1") == "1",
                            occupations=request.form.get("occupations", "smearing"),
                            kspacing=float(request.form.get("kspacing") or 0.25),
-                           spin=request.form.get("spin", "auto"))
+                           spin=request.form.get("spin", "auto"),
+                           hubbard=request.form.get("hubbard", "auto"))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify(jobs._jsonable(r))

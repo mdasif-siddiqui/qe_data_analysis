@@ -18,16 +18,20 @@ from . import pseudos
 PSL_TAGS = ["n", "dn", "spn", "spdn", "s", "sl", "nl", "dnl", "spnl", "spdnl", "sp", "spl", ""]
 
 
-def _psl(kind: str) -> list[str]:
-    return [f"{{el}}.pbe-{t + '-' if t else ''}{kind}_psl.1.0.0.UPF" for t in PSL_TAGS]
+def _psl(kind: str, rel: bool = False) -> list[str]:
+    return [f"{{el}}.{'rel-' if rel else ''}pbe-{t + '-' if t else ''}{kind}_psl.1.0.0.UPF" for t in PSL_TAGS]
 
 
 CANDIDATES = {
     "pbe": _psl("rrkjus") + _psl("kjpaw") + ["{el}.pbe-rrkjus.UPF"],
     "pbe-paw": _psl("kjpaw"),
     "lda-nc": ["{el}.pz-vbc.UPF", "{el}.pz-bhs.UPF", "{el}.pz-mt.UPF", "{el}.pz-n-vbc.UPF", "{el}.pz-hgh.UPF"],
+    # fully relativistic PSlibrary files: spin-orbit coupling (noncolin + lspinorb)
+    "pbe-so": _psl("rrkjus", rel=True) + _psl("kjpaw", rel=True),
 }
-FUNCTIONALS = {"pbe": "PBE (ultrasoft/PAW, PSlibrary)", "pbe-paw": "PBE PAW (PSlibrary; GIPAW-ready for NMR)", "lda-nc": "LDA, norm-conserving (needed for Raman and UV-Vis)"}
+FUNCTIONALS = {"pbe": "PBE (ultrasoft/PAW, PSlibrary)", "pbe-paw": "PBE PAW (PSlibrary; GIPAW-ready for NMR)",
+               "lda-nc": "LDA, norm-conserving (needed for Raman and UV-Vis)",
+               "pbe-so": "PBE with spin-orbit coupling (fully relativistic PSlibrary)"}
 _exists_cache: dict[str, bool] = {}
 
 
@@ -181,10 +185,52 @@ def _site_labels(cif_text: str, atoms) -> list[str] | None:
 # ferromagnetically; non-magnetic compounds of them (e.g. low-spin Fe2+) simply converge to zero moment.
 MAGNETIC = {"Cr", "Mn", "Fe", "Co", "Ni", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb"}
 
+# Hubbard U (eV) of the Materials Project (GGA+U, fitted to oxide formation enthalpies), used by
+# hubbard="auto" for oxides and fluorides. Any element can be given by hand instead ("Ni=6.2, Fe=5").
+HUBBARD_U = {"V": 3.25, "Cr": 3.7, "Mn": 3.9, "Fe": 5.3, "Co": 3.32, "Ni": 6.2, "Mo": 4.38, "W": 6.2}
+
+
+def _hubbard_shell(el: str) -> str | None:
+    from ase.data import atomic_numbers
+    z = atomic_numbers.get(el, 0)
+    if 21 <= z <= 30:
+        return "3d"
+    if 39 <= z <= 48:
+        return "4d"
+    if 72 <= z <= 80:
+        return "5d"
+    if 57 <= z <= 71:
+        return "4f"
+    if 89 <= z <= 103:
+        return "5f"
+    return None
+
+
+def _has_wfc(upf_path, shell: str) -> bool:
+    """True if the UPF has an atomic wavefunction labelled like '3D' (needed as the Hubbard projector)."""
+    try:
+        txt = open(upf_path, errors="replace").read()
+    except OSError:
+        return True   # cannot check: let pw.x decide
+    return re.search(r'label\s*=\s*"\s*' + shell.upper() + r'\s*"', txt, re.I) is not None or \
+        re.search(r"^\s*" + shell.upper() + r"\s+\d", txt, re.M) is not None
+
+
+def parse_hubbard(spec: str) -> dict[str, float]:
+    """'Ni=6.2, Fe = 5' -> {'Ni': 6.2, 'Fe': 5.0}."""
+    out = {}
+    for el, v in re.findall(r"([A-Z][a-z]?)\s*[=:]\s*([0-9.]+)", spec or ""):
+        out[el] = float(v)
+    return out
+
 
 def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, occupations: str = "smearing",
-               kspacing: float = 0.25, prefix: str | None = None, download: bool = True, spin: str = "auto") -> dict:
-    """Returns {"text": scf input, "info": {...}, "warnings": [...]}."""
+               kspacing: float = 0.25, prefix: str | None = None, download: bool = True, spin: str = "auto",
+               hubbard: str = "auto") -> dict:
+    """Returns {"text": scf input, "info": {...}, "warnings": [...]}.
+
+    hubbard: "auto" (Materials Project U for V, Cr, Mn, Fe, Co, Ni, Mo, W in oxides and fluorides), "off",
+    or explicit values such as "Ni=6.2, Fe=5.3" (eV)."""
     from ase.io import read
     from ase import Atoms
     warnings: list[str] = []
@@ -251,10 +297,11 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
     from ase.data import atomic_masses, atomic_numbers
 
     # pseudopotentials and cutoffs
-    ps, ecw, ecr, kinds = {}, [], [], set()
+    ps, ecw, ecr, kinds, ps_path = {}, [], [], set(), {}
     for el in elements:
         name = choose_pseudo(el, functional)
         ps[el] = name
+        ps_path[el] = None
         if not name:
             warnings.append(f"No {FUNCTIONALS[functional]} pseudopotential for {el} found in the QE library: "
                             f"upload a .UPF file for {el} and edit ATOMIC_SPECIES.")
@@ -266,6 +313,7 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
             except Exception as e:
                 warnings.append(f"Could not download {name}: {e}")
         if path:
+            ps_path[el] = path
             w, r = suggested_cutoffs(path)
             kinds.add(pseudo_kind(path))
             if w:
@@ -305,8 +353,18 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
     if occupations == "smearing":
         lines += ["  occupations = 'smearing'", "  smearing = 'mv'", "  degauss = 0.01"]
     mag = [el for el in elements if el in MAGNETIC]
+    if functional == "pbe-so":
+        # spin-orbit: two-component spinors. Magnetic order then needs non-collinear starting moments (angle1/2),
+        # which this converter does not set up: SOC inputs are made non-magnetic.
+        lines += ["  noncolin = .true.", "  lspinorb = .true."]
+        info["spin"] = "spin-orbit coupling (noncolin, lspinorb), non-magnetic"
+        if mag and spin != "off":
+            warnings.append(f"Spin-orbit coupling: {', '.join(mag)} is usually magnetic, but magnetic SOC inputs "
+                            "(starting_magnetization with angle1/angle2) are not set up by the converter; this input is "
+                            "non-magnetic. Add them by hand if needed.")
+        spin = "off"
     polarised = spin in ("on", "afm") or (spin == "auto" and bool(mag))
-    info["spin"] = ("spin-polarised (antiferromagnetic start: " + ", ".join(f"{s} {'+' if v > 0 else '−'}" for s, v in afm_sign.items()) + ")"
+    info["spin"] = info["spin"] if functional == "pbe-so" else ("spin-polarised (antiferromagnetic start: " + ", ".join(f"{s} {'+' if v > 0 else '−'}" for s, v in afm_sign.items()) + ")"
                     if afm_sign else "spin-polarised (ferromagnetic start)" if polarised else "non-magnetic")
     if polarised:
         lines.append("  nspin = 2")
@@ -339,6 +397,45 @@ def cif_to_scf(cif_text: str, functional: str = "pbe", primitive: bool = True, o
     for s, p in zip(species, atoms.get_scaled_positions(wrap=True)):
         lines.append(f"  {s:3s} " + " ".join(f"{x:13.9f}" for x in p))
     lines += ["K_POINTS automatic", "  {} {} {} 0 0 0".format(*grid)]
+
+    # DFT+U (Dudarev, ortho-atomic projectors, QE 7 HUBBARD card)
+    hub = str(hubbard or "auto").strip()
+    if hub.lower() == "auto":
+        anion = any(el in ("O", "F") for el in elements)
+        u_of = {el: HUBBARD_U[el] for el in elements if el in HUBBARD_U} if anion else {}
+        source = "Materials Project values"
+    elif hub.lower() in ("off", "none", "0", ""):
+        u_of, source = {}, ""
+    else:
+        u_of, source = parse_hubbard(hub), "given"
+        if not u_of:
+            warnings.append(f"Could not read the Hubbard U values {hub!r}; write them like 'Ni=6.2, Fe=5.3'. No +U was used.")
+        for el in [e for e in u_of if e not in elements]:
+            warnings.append(f"Hubbard U for {el} ignored: there is no {el} in this structure.")
+            u_of.pop(el)
+    hub_lines, used = [], []
+    for sp in species_list:
+        el = sp_el[sp]
+        if el not in u_of or u_of[el] <= 0:
+            continue
+        shell = _hubbard_shell(el)
+        if shell is None:
+            warnings.append(f"No d or f shell known for {el}: Hubbard U not applied to it.")
+            continue
+        if ps_path.get(el) and not _has_wfc(ps_path[el], shell):
+            warnings.append(f"The pseudopotential {ps[el]} has no {shell} atomic wavefunction, which DFT+U needs as "
+                            f"projector: U on {el} was not applied.")
+            continue
+        hub_lines.append(f"  U {sp}-{shell} {u_of[el]:g}")
+        used.append(f"{sp}-{shell} {u_of[el]:g} eV")
+    if hub_lines:
+        lines += ["HUBBARD (ortho-atomic)"] + hub_lines
+        info["hubbard"] = "DFT+U (" + source + "): " + ", ".join(dict.fromkeys(used))
+        warnings.append("DFT+U: " + ", ".join(dict.fromkeys(used)) + f" ({source}, ortho-atomic projectors). U shifts "
+                        "band gaps, moments and energies; compare only calculations with the same U. Phonons, IR/Raman "
+                        "and NMR with +U are not tested.")
+    else:
+        info["hubbard"] = "none"
     if occupations == "fixed":
         warnings.append("Fixed occupations: correct only for insulators and semiconductors. Use smearing for metals.")
     if functional == "lda-nc":
